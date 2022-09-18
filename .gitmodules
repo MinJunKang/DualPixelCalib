@@ -1,0 +1,9 @@
+[submodule "src/calib/extern/DeepRFT"]
+	path = src/calib/extern/DeepRFT
+	url = https://github.com/MinJunKang/DeepRFT
+[submodule "src/calib/extern/MPRNet"]
+	path = src/calib/extern/MPRNet
+	url = https://github.com/MinJunKang/MPRNet
+[submodule "src/calib/extern/IFAN"]
+	path = src/calib/extern/IFAN
+	url = https://github.com/MinJunKang/IFAN
