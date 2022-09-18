@@ -1,12 +1,12 @@
 
 # Download and Install
 
-## git clone
+## 1. Git clone
 ```
 git clone --recursive https://github.com/MinJunKang/DualPixelCalib.git
 ```
 
-## download calib dataset and put them under dataset directory.
+## 2. Download calib dataset and put them under dataset directory.
 ```
 - boards
 - src
@@ -20,4 +20,6 @@ git clone --recursive https://github.com/MinJunKang/DualPixelCalib.git
 - requirements.txt
 ```
 
-## download checkpoint from [link](https://drive.google.com/open?id=1MnoyTZgHgG7vwZYuloLeQgegwa6O9A7O&authuser=codeslake%40gmail.com&usp=drive_fs) and put them into src/calib/extern/IFAN/ckpt
+## 3. Download checkpoint from [link](https://drive.google.com/open?id=1MnoyTZgHgG7vwZYuloLeQgegwa6O9A7O&authuser=codeslake%40gmail.com&usp=drive_fs) and put them into src/calib/extern/IFAN/ckpt
+
+## 4. pip install -r requirements.txt (Docker will be provided later)
