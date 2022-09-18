@@ -1,0 +1,33 @@
+{
+    "device": "dslr",
+    "size_square_mm": 41,
+    "fnumber_dslr": 2.8,
+    "focus_phone": 10.2,
+
+    "use_LDS": false,
+    "LDS_step": 0.5,
+    "LDS_ks": 5,
+    "LDS_sigma": 2,
+    "use_lr": false,
+    "use_mpi": true,
+
+    "batch_size": 4,
+    "epoch": 200,
+    
+    "optim": "madam",
+
+    "model_cfg": {
+        "multi_res": true,
+        "psfV_size": 128,
+        "level": 64,
+        "patch_margin": 2.0,
+        "use_tv": true,
+        "depth_varying": true,
+        "loss_weights": [100, 100, 1.0, 1.5e-2],
+        "record_epoch": 10,
+        "num_vis": 16,
+        "scales": [0.5, 1.0, 2.0],
+        "milestones": [60, 120, 200],
+        "use_voxlr": true
+    }
+}

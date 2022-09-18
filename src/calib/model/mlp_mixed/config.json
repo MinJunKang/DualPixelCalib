@@ -1,0 +1,17 @@
+{
+    "device": "dslr",
+    "size_square_mm": 41,
+    "fnumber_dslr": 2.8,
+    "focus_phone": 10.2,
+
+    "use_LDS": false,
+    "LDS_step": 0.5,
+    "LDS_ks": 5,
+    "LDS_sigma": 2,
+
+    "batch_size": 4,
+    "epoch": 50,
+    
+    "optim": "madam",
+    "use_tv": true
+}

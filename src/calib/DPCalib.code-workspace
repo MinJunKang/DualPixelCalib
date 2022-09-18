@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../ECCV_DPCalib"
+		}
+	],
+	"settings": {
+		"files.watcherExclude": {
+			"dataset/new_DSLRCalib1": true
+		}
+	}
+}
