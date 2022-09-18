@@ -13,11 +13,11 @@ git clone --recursive https://github.com/MinJunKang/DualPixelCalib.git
   - calib
   - endtask
 - dataset
-  - put own dataset here !!
-- main_calibrate.py
-- main_endtask.py
-- README.md
-- requirements.txt
+  - put your own dataset here !!
+  main_calibrate.py
+  main_endtask.py
+  README.md
+  requirements.txt
 ```
 
 ## 3. Download checkpoint from [link](https://drive.google.com/open?id=1MnoyTZgHgG7vwZYuloLeQgegwa6O9A7O&authuser=codeslake%40gmail.com&usp=drive_fs) and put them into src/calib/extern/IFAN/ckpt
