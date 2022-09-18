@@ -7,3 +7,6 @@
 [submodule "src/calib/extern/IFAN"]
 	path = src/calib/extern/IFAN
 	url = https://github.com/MinJunKang/IFAN
+[submodule "src/calib/extern/pacnet"]
+	path = src/calib/extern/pacnet
+	url = https://github.com/MinJunKang/pacnet
