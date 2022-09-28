@@ -29,7 +29,8 @@ def main():
 
     # seed initialize : for reproducibility
     seed_everything(0)
-
+    
+    # region calibration
     # read imgs and detect board (Initial)
     board = CalibBoard(opt)
     raw, data, if_update = board.detectBoard()
@@ -46,16 +47,20 @@ def main():
     
     # stereo calibration between (L + R) and lidar
     data, if_update = calib.stereo_calib(raw, data, if_update)
+    # endregion
         
     # Find actual focus distance g
     data = calib.estimate_gvalue(raw, data, if_update, visualize_graph=False)  # -> get gvalue from focal stack
     
-    # Prepare patches for learning PSF 
+    # Prepare patches for learning PSF
     patches = calib.prepare_patches(raw, data, if_update=if_update)
     
     # Calibrate PSF Volume
     psflearner = PSFLearner(data[board.device], opt, board)
-    psflearner.train(patches, ckpt=opt.load_ckpt_name)
+    
+    # learn individual PSF volume
+    for type in ['DPc', 'DPl', 'DPr']:
+        psflearner.train(patches, raw[board.device], type=type, ckpt=opt.load_ckpt_name)
     pdb.set_trace()
 
 

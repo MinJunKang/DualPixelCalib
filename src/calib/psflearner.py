@@ -1,8 +1,10 @@
 
 import pdb
 import torch
+import numpy as np
 from pathlib import Path
 from runpy import run_path
+from functools import partial
 from torch.utils.data import DataLoader
 
 from pytorch_lightning import Trainer
@@ -22,17 +24,21 @@ class PSFLearner(object):
     def __init__(self, data, opt, board):
         self.opt = opt
         
-        # declare the model
-        file = run_path('src/calib/model/%s/mainmodel.py' % opt.model)
-        self.model = file['PSFVolume'](data['meta_data'], opt)
+        # model paths
+        self.metadata = data['meta_data']
+        self.file = run_path('src/calib/model/%s/mainmodel.py' % opt.model)
         self.board = board
         self.ckpt_name = None
     
-    def train(self, patches, ckpt=None):
+    def train(self, patches, raw, type, ckpt=None):
+        '''
+            train PSF volume of left, right, center individually
+        '''
         
         # savepath
         rootpath = makedir_custom(Path('workspace'))  # rootpath
         rootpath = makedir_custom(rootpath / self.opt.calibname)  # workspace
+        rootpath = makedir_custom(rootpath / ('%s_%s' % (self.board.tag, type)))  # workspace
         modelpath = makedir_custom(rootpath / self.opt.model)  # model workspace (save model related files here)
         ckptpath = makedir_custom(modelpath / 'ckpt')  # ckpt workspace (save checkpoint here)
         resultpath = makedir_custom(modelpath / 'result')  # save result here
@@ -49,21 +55,27 @@ class PSFLearner(object):
         callbacks = [lr_monitor, cp_monitor, TVLoss()] if self.opt.model_cfg.use_tv else [lr_monitor, cp_monitor]
         
         # dataloader setting
-        pdb.set_trace()
-        loader_ = DPCalloader(patches['patches'], True, self.opt)
-        dataloader = DataLoader(loader_, batch_size=self.opt.batchsize,
+        loader_ = DPCalloader(patches['%s_patch' % type], True, self.opt)
+        dataloader = DataLoader(loader_, batch_size=self.opt.batch_size,
                                 shuffle=True, num_workers=self.opt.num_workers, 
-                                in_memory=True)
+                                collate_fn=loader_.calib_collate_fn, pin_memory=True)
+        val_dataloader = DataLoader(loader_, batch_size=1,
+                                    shuffle=False, num_workers=2, 
+                                    collate_fn=loader_.calib_collate_fn, pin_memory=True)
+        
+        # declare the model
+        self.model = self.file['PSFVolume'](self.metadata, self.opt)
+        
+        # psfV_scale
+        psf_prj_scale = [max(scale) for scale in patches['%s_patch' % type]['scale']]
         
         # for visualization
-        vis_index = np.random.choice(len(loader_), opt.model_cfg.num_vis, replace=False).tolist()  # type: ignore
+        vis_index = np.random.choice(len(loader_), self.opt.model_cfg.num_vis, replace=False).tolist()  # type: ignore
         
         # setting model detail
-        if self.opt.model_cfg.multi_res:
-            psfV_scales = self.opt.model_cfg.scales / self.opt.model_cfg.scales[0]
-            milestones = self.opt.model_cfg.milestones
-            callbacks.append(Volume_Scheduler(psfV_scales, milestones))
-        cfg = {'vis_idx': vis_index, 'modelpath': modelpath, 'resultpath': resultpath}
+        if len(self.opt.model_cfg.scales) > 1: callbacks.append(Volume_Scheduler(self.opt))
+        cfg = {'psf_prj_scale': psf_prj_scale, 'img_size': (raw['h_dev'], raw['w_dev']), 
+               'vis_idx': vis_index, 'modelpath': modelpath, 'resultpath': resultpath}
         self.model.model_setting(cfg)
         
         # start training
@@ -83,12 +95,20 @@ class PSFLearner(object):
             profiler="pytorch"
         )
         
+        # train begin
         ckpt_path = str(ckptpath / ckpt) if ckpt is not None else None
-        runner.fit(model=self.model, ckpt_path=ckpt_path)
+        runner.fit(model=self.model, train_dataloaders=dataloader, val_dataloaders=val_dataloader, ckpt_path=ckpt_path)
         
+    def train_all(self, patches, ckpt=None):
+        '''
+            train PSF volume of left, right, center all together
+        '''
         pass
     
     def test(self):
+        pass
+    
+    def test_all(self):
         pass
 
 

@@ -1,20 +1,19 @@
 
-from curses import raw
+from distutils.log import info
 import pdb
 import os
 import cv2
+import copy
 import math
 from tqdm import tqdm
-import flax
 import torch
 import numpy as np
 import pandas as pd
-from PIL import Image
 from skimage.transform import resize
 from pathlib import Path
+import pandas as pd
 
-import parmap
-from multiprocessing import Manager, cpu_count
+import threading, queue
 
 from src.calib.utils.file_manager import makedir_custom, read_img_raw, read_img
 from src.calib.utils.geometry import convert2homography
@@ -27,6 +26,7 @@ class CalibBoard(object):
     def __init__(self, args):
         
         # arguments
+        self.args = args
         self.device = args.device
         self.verbose = args.verbose
         self.board_name = args.board_name
@@ -50,65 +50,97 @@ class CalibBoard(object):
         # get board with multiple scale
         board_scaled = []
         for scale in scales:
-            board_scaled.append(create_full_board(info_board, self.size_square_mm, scale))
+            info_board_scale = copy.deepcopy(info_board)
+            board_scaled.append(create_full_board(info_board_scale, self.size_square_mm, scale))
         
         return board_scaled
     
-    def read_lidar(self):
-        
-        raw_data = {'lidar_img': [], 'lidar_depth': [], 'lidar_mask': [],
-                    'view_num': 0}
-        
-        for path in sorted(self.rootpath.glob('sample*')):
-            
-            # read lidar information
-            lidar_img = cv2.imread(str(path / 'LIDAR_IMG.png'))
-            lidar_mask = np.load(str(path / 'LIDAR_MASK.npy'))
-            lidar_depth = np.load(str(path / 'LIDAR_DEPTH.npy'))
-            
-            # mask is applied to img
-            lidar_img *= np.repeat(np.expand_dims(lidar_mask, 2), 3, 2)
-            
-            raw_data['lidar_img'].append(lidar_img)
-            raw_data['lidar_depth'].append(lidar_depth)
-            raw_data['lidar_mask'].append((lidar_depth > 0) & lidar_mask)
-            raw_data['view_num'] += 1
-
-        return raw_data
+    def preload_worker(self,data_list,load_func,q,lock,idx_tqdm,device):
+        while True:
+            data = q.get()
+            if device is None:
+                data_list[data['idx']] = load_func(data['path'])
+            else:
+                data_list[data['idx']] = load_func(data['path'], device)
+            with lock:
+                idx_tqdm.update()
+            q.task_done()
     
-    def read_data(self, device='dslr'):
+    def preload_threading(self,opt,load_func,paths,data_str="images",device=None):
+        data_list = [None]*len(paths)
+        q = queue.Queue(maxsize=len(paths))
+        idx_tqdm = tqdm(range(len(paths)),desc="preloading {}".format(data_str),leave=False)
+        for i in range(len(paths)): q.put({'idx':i,'path':paths[i]})
+        lock = threading.Lock()
+        for ti in range(opt.num_workers_img):
+            t = threading.Thread(target=self.preload_worker,
+                                 args=(data_list,load_func,q,lock,idx_tqdm,device),daemon=True)
+            t.start()
+        q.join()
+        idx_tqdm.close()
+        assert(all(map(lambda x: x is not None,data_list)))
+        
+        # convert list of dict to dict of list
+        return pd.DataFrame(data_list).to_dict(orient='list')
+    
+    def read_data_device(self, path, device='dslr'):
+        
+        # read info
+        info_ = np.load(str(path / 'info.npy'), allow_pickle=True).item()
+        
+        if device == 'dslr':  # read dslr images
+            index_ = info_['fnumber_dslr'].index(self.fnumber_dslr)
+            index_focus = info_['fnumber_dslr'].index(16.0)
+            focal_mm = info_['focal_dslr'][index_]
+            
+            img_name = info_['filename_dslr'][index_]
+            img_l = read_img(str(path / 'LEFT' / img_name), scale=1.0)
+            img_r = read_img(str(path / 'RIGHT' / img_name), scale=1.0)
+            img_c = read_img(str(path / 'CENTER' / img_name), scale=0.5)
+            all_in_focus = read_img(str(path / 'CENTER' / info_['filename_dslr'][index_focus]), scale=0.5)
+            
+        else:  # read phone images
+            index_ = info_['focus_phone'].index(self.focus_phone)
+            focal_mm = 27.0
+            
+            img_name = info_['filename_phone'][index_]
+            img_l = read_img_raw(str(path / 'LEFT' / img_name))
+            img_r = read_img_raw(str(path / 'RIGHT' / img_name))
+            img_c = read_img_raw(str(path / 'CENTER' / img_name))
+            all_in_focus = None  # not available
+            
+        return {'DPl_img': img_l, 'DPr_img': img_r, 'DPc_img': img_c, 'Focus_img': all_in_focus, 'focal_mm': focal_mm}
+    
+    def read_data_lidar(self, path):
+        
+        # read lidar information
+        lidar_img = cv2.imread(str(path / 'LIDAR_IMG.png'))
+        lidar_mask = np.load(str(path / 'LIDAR_MASK.npy'))
+        lidar_depth = np.load(str(path / 'LIDAR_DEPTH.npy'))
+        
+        # mask is applied to img
+        lidar_img *= np.repeat(np.expand_dims(lidar_mask, 2), 3, 2)
+        lidar_mask = (lidar_depth > 0) & lidar_mask
+        
+        return {'lidar_img': lidar_img, 'lidar_depth': lidar_depth, 'lidar_mask': lidar_mask}
+    
+    def read_data_parallel(self, device='dslr', load_lidar=True):
         assert(device in ['dslr', 'phone'])
         
-        raw_data = {'DPl_img': [], 'DPr_img': [], 'DPc_img': [], 
-                    'view_num': 0, 'focal_mm': []}
+        raw_data = dict()
         
-        for path in tqdm(sorted(self.rootpath.glob('sample*')), desc='reading %s' % device):
+        # read all the path
+        path_all = [path for path in sorted(self.rootpath.glob('sample*'))]
+        raw_data['view_num'] = len(path_all)
         
-            info_ = np.load(str(path / 'info.npy'), allow_pickle=True).item()
-            
-            if device == 'dslr':  # read dslr images
-                index_ = info_['fnumber_dslr'].index(self.fnumber_dslr)
-                focal_mm = info_['focal_dslr'][index_]
-                
-                img_name = info_['filename_dslr'][index_]
-                img_l = read_img(str(path / 'LEFT' / img_name), scale=1.0)
-                img_r = read_img(str(path / 'RIGHT' / img_name), scale=1.0)
-                img_c = read_img(str(path / 'CENTER' / img_name), scale=0.5)
-                
-            else:  # read phone images
-                index_ = info_['focus_phone'].index(self.focus_phone)
-                focal_mm = 27.0
-                
-                img_name = info_['filename_phone'][index_]
-                img_l = read_img_raw(str(path / 'LEFT' / img_name))
-                img_r = read_img_raw(str(path / 'RIGHT' / img_name))
-                img_c = read_img_raw(str(path / 'CENTER' / img_name))
-                
-            raw_data['DPl_img'].append(img_l)
-            raw_data['DPr_img'].append(img_r)
-            raw_data['DPc_img'].append(img_c)
-            raw_data['focal_mm'].append(focal_mm)
-            raw_data['view_num'] += 1
+        # read all the data in parallel
+        raw_data.update(self.preload_threading(self.args, self.read_data_device, path_all, data_str="dp_images", device=device))
+        raw_data['h_dev'] = raw_data['DPc_img'][0].shape[0]
+        raw_data['w_dev'] = raw_data['DPc_img'][0].shape[1]
+        if load_lidar:
+            raw_data.update(self.preload_threading(self.args, self.read_data_lidar, path_all, data_str="lidar_images"))
+            raw_data['h_lidar'] = raw_data['lidar_img'][0].shape[0]
+            raw_data['w_lidar'] = raw_data['lidar_img'][0].shape[1]
         
         return raw_data
     
@@ -121,9 +153,7 @@ class CalibBoard(object):
         
         # read raw data
         raw_data = dict()
-        raw_data[self.device] = self.read_data(device=self.device)
-        raw_data[self.device].update(self.read_lidar())
-        
+        raw_data[self.device] = self.read_data_parallel(device=self.device)
         savepath = self.storepath / ('rawdata_%s_%s.npy' % (self.device, self.tag))
         
         # load data if available
@@ -416,7 +446,7 @@ class CalibBoard(object):
             dev_data = np.load(str(savepath), allow_pickle=True).item()
             if_update = False
         else:
-            repj_thres = 1.5
+            repj_thres = 2.0
             dev_data = data[self.device].copy()
             dev_raw = raw[self.device]
             worldpts = np.reshape(self.board_ref['rec3d_world'], [-1, 3])
@@ -428,8 +458,8 @@ class CalibBoard(object):
                 
                 for tag in ['DPl', 'DPr', 'DPc', 'lidar']:
                     
-                    corner_obj = dev_data['%s_corner' % tag]
                     calib_obj = dev_data['%s_calib' % tag]
+                    corner_obj = dev_data['%s_corner' % tag]
                     h, w = dev_raw['%s_img' % tag][i].shape[:2]
                     
                     # check usage

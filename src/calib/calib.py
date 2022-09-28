@@ -71,7 +71,7 @@ class Calibration(object):
         data = {'mtx': [], 'umtx': [], 'dist': [], 'tvecs': [], 'rvecs': [], 'idx': []}
         
         # calibration
-        print('calibration for %s view camera for (%d/%d) views' % (type, len(pairs['idx']), viewnum))
+        print('calibration of %s view camera with (%d/%d) views' % (type, len(pairs['idx']), viewnum))
         ret, data['mtx'], data['dist'], data['rvecs'], data['tvecs'] = cv2.calibrateCamera(pairs['X'], pairs['x'], (w, h), None, None)
         
         # save undistorted intrinsic
@@ -108,9 +108,9 @@ class Calibration(object):
             dev_data = data[self.board.device]
             dev_raw = raw[self.board.device]
             viewnum = dev_raw['view_num']
-            h_dev, w_dev = dev_raw['DPc_img'][0].shape[:2]
-            h_lidar, w_lidar = dev_raw['lidar_img'][0].shape[:2]
-            for tag in ['DPl', 'DPr', 'DPc', 'lidar']:
+            h_dev, w_dev = dev_raw['h_dev'], dev_raw['w_dev']
+            h_lidar, w_lidar = dev_raw['h_lidar'], dev_raw['w_lidar']
+            for tag in ['DPl', 'DPr', 'DPc', 'lidar']:  # calibration of DPl, DPr is needed only for propagating corners
                 
                 # 2d - 3d pairs
                 (h, w) = (h_lidar, w_lidar) if tag =='lidar' else (h_dev, w_dev)
@@ -124,7 +124,7 @@ class Calibration(object):
             if_update = True
             
         if self.verbose:
-            for tag in ['DPl', 'DPr', 'DPc', 'lidar']:
+            for tag in ['DPl', 'DPr', 'DPc', 'lidar']:  # calibration of DPl, DPr is needed only for propagating corners
                 reprojection_error = np.mean(np.array(calibdata['%s_calib' % tag]['ret']))
                 print('Calibration %s from %s view camera with reprojection error of %f' % (prefix, tag, reprojection_error))
             
@@ -281,6 +281,7 @@ class Calibration(object):
             worldpts = np.float32(np.reshape(self.board.board_ref['rec3d_world'], [-1, 3]))
             
             dev_data = data[self.board.device]
+            
             idx_l, idx_r, idx_c = dev_data['DPl_calib']['idx'], dev_data['DPr_calib']['idx'], dev_data['DPc_calib']['idx']
             
             # get common index
@@ -375,6 +376,9 @@ class Calibration(object):
         return gvalue, kvalue, bias, tterm, aperture
     
     def prepare_patches(self, raw, data, multi=True, if_update=False):
+        '''
+            Strictly, left and right dual-pixel's intrinsic should be calibrated individually along depth.
+        '''
         
         # save path
         savepath = self.storepath / ('patchdata_%s_%s.npy' % (self.board.device, self.board.tag))
@@ -403,15 +407,17 @@ class Calibration(object):
             patchdata = {'DPl_patch': [], 'DPr_patch': [], 'DPc_patch': [], 'lidar_patch': [], 'board_num': board_num}
             
             # get patches
+            infos_focus = self.calc_circles(self.board.board_ref, data_all, 'DPc', 'Focus', idx_common, indexes['DPc'])
             for tag in ['DPl', 'DPr', 'DPc', 'lidar']:
                 dindex = None if tag == 'lidar' else indexes['DPc']
-                patchdata['%s_patch' % tag] = self.calc_patches(data_all, tag, idx_common, indexes[tag], board_num, dindex)
+                infos_ = None if tag == 'lidar' else infos_focus
+                patchdata['%s_patch' % tag] = self.calc_patches(data_all, tag, idx_common, indexes[tag], board_num, dindex, infos_)
             
             np.save(str(savepath), patchdata)
         
         return patchdata
     
-    def calc_circles(self, board, data, type, indexes, calib_indexes):
+    def calc_circles(self, board, data, type, dtype, indexes, calib_indexes):
         
         # calculate circles, patch locations
         patch_prop = {'circle': [], 'mask': []}
@@ -428,7 +434,7 @@ class Calibration(object):
         
         data_raw, data_calib = data[0], data[1]
         
-        for i, idx in tqdm(enumerate(indexes), desc='Calculating circles for %s' % type):
+        for i, idx in tqdm(enumerate(indexes), desc='Calculating circles for %s' % dtype):
             calibidx = calib_indexes[i]
             
             # load calib info
@@ -438,22 +444,23 @@ class Calibration(object):
             mtx, dist = data_calib['%s_calib' % type]['mtx'], data_calib['%s_calib' % type]['dist']
             
             # projected image
+            rotz = torch.tensor(-findrotz_euler(rvec) * 180 / math.pi)
             homo = findhomography(rvec, tvec, umtx, size_template_px, size_template_py, self.board.size_square_mm)
-            img = data_raw['%s_img' % type][idx]
+            img = data_raw['%s_img' % dtype][idx]
             if img.ndim == 3:
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             uimg = cv2.undistort(img, mtx, dist, None, umtx)  # type: ignore
             pimg = cv2.warpPerspective(uimg, np.linalg.inv(homo), template.shape[::-1])
             
             # detect circles from blur patch
-            circles, mask, _ = self.detect_circle_from_img(pimg, radius, patches_corner, size_patch)
+            circles, mask, _ = self.detect_circle_from_img(pimg, radius, patches_corner, size_patch, rotz)
             
             patch_prop['circle'].append(circles)
             patch_prop['mask'].append(mask)
             
         return patch_prop
     
-    def calc_patches(self, data, type, indexes, calib_indexes, board_num, didx=None):
+    def calc_patches(self, data, type, indexes, calib_indexes, board_num, didx=None, infos_focus=None):
         '''
             Todo : 
             1. surface normal
@@ -462,12 +469,14 @@ class Calibration(object):
         '''
         
         # calc basic informations
-        infos = self.calc_circles(self.board.board_ref, data, type, indexes, calib_indexes)
+        infos = self.calc_circles(self.board.board_ref, data, type, type, indexes, calib_indexes)
         
         # multi-res patch assign
         data_raw, data_calib = data[0], data[1]
         result = {'uv_coord': [], 'sharp': [], 'depth': [], 'blur': [],
-                  'normal': [], 'K': [], 'idx': [], 'idx_board': [], 'size_patch': []}
+                  'normal': [], 'Kmat': [], 'scale': [], 'idx': [], 'idx_board': [], 'size_patch': []}
+        if infos_focus is not None:
+            result['focus'] = []
         
         for bidx in range(board_num):
             
@@ -490,7 +499,7 @@ class Calibration(object):
             pts3d = np.reshape(pts3d, [-1, 3])
             
             # patchify
-            uv_coord, sharps_, depths_, blurs_, indexes_, indexes_board_, normals_, Ks_ = [], [], [], [], [], [], [], []
+            uv_coord, sharps_, depths_, blurs_, focuses_, indexes_, indexes_board_, normals_, Ks_, scales_ = [], [], [], [], [], [], [], [], [], []
         
             for i, idx in tqdm(enumerate(indexes), desc='Creating patches for %s (%d/%d)' % (type, bidx + 1, board_num)):
                 calibidx = calib_indexes[i]
@@ -503,10 +512,10 @@ class Calibration(object):
                 if didx is not None:
                     idx_center = didx[i]
                     rvec_c, tvec_c = data_calib['DPc_calib']['rvecs'][idx_center], data_calib['DPc_calib']['tvecs'][idx_center]
-                    mtx_c, dist_c = data_calib['DPc_calib']['mtx'], data_calib['DPc_calib']['dist']
+                    umtx_c, mtx_c, dist_c = data_calib['DPc_calib']['umtx'], data_calib['DPc_calib']['mtx'], data_calib['DPc_calib']['dist']
                 else:
                     rvec_c, tvec_c = rvec, tvec
-                    mtx_c, dist_c = mtx, dist
+                    umtx_c, mtx_c, dist_c = umtx, mtx, dist
                 
                 # projected points, uv coords
                 prj_uv, _ = cv2.projectPoints(pts3d, rvec, tvec, mtx, dist)
@@ -520,21 +529,37 @@ class Calibration(object):
                 # projected image
                 rotz = findrotz_euler(rvec)
                 homo = findhomography(rvec, tvec, umtx, size_template_px, size_template_py, self.board.size_square_mm)
+                invhomo = np.linalg.inv(homo)
                 img = data_raw['%s_img' % type][idx]
                 if img.ndim == 3:
                     img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
                 uimg = cv2.undistort(img, mtx, dist, None, umtx)  # type: ignore
-                pimg = cv2.warpPerspective(uimg, np.linalg.inv(homo), template.shape[::-1])
+                pimg = cv2.warpPerspective(uimg, invhomo, template.shape[::-1])  # image to projective space
+                scale_term = max(np.abs(invhomo[0, 0] + invhomo[0, 1]), np.abs(invhomo[1, 0] + invhomo[1, 1]))  # to determine patch_size in projective space
+                # since invhomo[2, 0] and invhomo[2, 1] is very small (<< 1), we ignore that terms in computing patch_size.
+                
+                # focus image
+                if infos_focus is not None:
+                    rotz_f = findrotz_euler(rvec_c)
+                    homo_f = findhomography(rvec_c, tvec_c, umtx_c, size_template_px, size_template_py, self.board.size_square_mm)
+                    img_f = data_raw['Focus_img'][idx]
+                    if img_f.ndim == 3:
+                        img_f = cv2.cvtColor(img_f, cv2.COLOR_RGB2GRAY)
+                    uimg_f = cv2.undistort(img_f, mtx_c, dist_c, None, umtx_c)  # type: ignore
+                    pimg_f = cv2.warpPerspective(uimg_f, np.linalg.inv(homo_f), template.shape[::-1])
+                else:
+                    rotz_f, pimg_f = None, None
             
                 # clean patches' patch
-                mask, count_mask = infos['mask'][i], sum(infos['mask'][i])
+                mask_all = np.logical_and(infos['mask'][i], infos_focus['mask'][i]) if infos_focus is not None else infos['mask'][i]
+                count_mask = np.sum(mask_all)
                 cleans = subpixel_cropper_batch(template, circles_center, size_patch, mode='bilinear')
-                cleans = np.stack(cleans, axis=0)[mask]
+                cleans = np.stack(cleans, axis=0)[mask_all]
             
                 if count_mask > 1:
                 
                     # masking circles
-                    circles = itemgetter(*np.where(mask)[0])(infos['circle'][i])
+                    circles = itemgetter(*np.where(mask_all)[0])(infos['circle'][i])
             
                     # centers from detected circles
                     blur_center = np.stack([np.array(circle.pt) for circle in circles if circle != []], axis=0)
@@ -547,17 +572,28 @@ class Calibration(object):
                     
                     # rotated pimg
                     angle_torch = torch.tensor(-rotz * 180 / math.pi)
-                    blurs = subpixel_cropper_batch(np.float32(pimg), blur_center, size_patch, mode='bilinear')
-                    blurs_torch = torch.from_numpy(blurs).float().unsqueeze(1)
-                    rotated_blurs = rotate(blurs_torch, angle=angle_torch.repeat(len(blurs)), 
-                                        mode='bilinear', padding_mode='border').squeeze().numpy()
-                
+                    blurs = subpixel_cropper_batch(np.float32(pimg), blur_center, size_patch, mode='bilinear', as_numpy=False)
+                    rotated_blurs = rotate(blurs[:, None], angle=angle_torch.repeat(len(blurs)), 
+                                           mode='bilinear', padding_mode='border').squeeze().numpy()
+
                     # based on circles and radius, create patch coord
                     rotated_uu = ndimage.rotate(input=np.float32(prj_uv[:, :, 0]), angle=-rotz * 180 / math.pi, order=0)
                     rotated_vv = ndimage.rotate(input=np.float32(prj_uv[:, :, 1]), angle=-rotz * 180 / math.pi, order=0)
                     patch_uu = subpixel_cropper_batch(rotated_uu, blur_center_, size_patch)
                     patch_vv = subpixel_cropper_batch(rotated_vv, blur_center_, size_patch)
                     patch_uv = np.stack([patch_uu, patch_vv], -1)
+                    
+                    # save paired all-in-focus image
+                    if infos_focus is not None:
+                        circles_f = itemgetter(*np.where(mask_all)[0])(infos_focus['circle'][i])
+                        focus_center = np.stack([np.array(circle.pt) for circle in circles_f if circle != []], axis=0)
+                        focus_center *= self.board_scales[bidx]
+                        
+                        angle_torch_f = torch.tensor(-rotz_f * 180 / math.pi)
+                        focuses = subpixel_cropper_batch(np.float32(pimg_f), focus_center, size_patch, mode='bilinear', as_numpy=False)
+                        rotated_f = rotate(focuses[:, None], angle=angle_torch_f.repeat(len(focuses)), 
+                                                 mode='bilinear', padding_mode='border').squeeze().numpy()
+                        focuses_ += np.split(rotated_f, len(rotated_f))
                 
                     # save data
                     uv_coord += np.split(patch_uv, len(patch_uv))
@@ -565,7 +601,8 @@ class Calibration(object):
                     depths_ += np.split(rotated_depths, len(rotated_depths))
                     blurs_ += np.split(rotated_blurs, len(rotated_blurs))
                     normals_ += [normal for _ in range(count_mask)]
-                    Ks_ += [mtx for _ in range(count_mask)]
+                    Ks_ += [umtx for _ in range(count_mask)]
+                    scales_ += [scale_term for _ in range(count_mask)]
                     indexes_ += [i for _ in range(count_mask)]
                     indexes_board_ += [idx for _ in range(count_mask)]
                 
@@ -575,19 +612,22 @@ class Calibration(object):
             result['normal'].append(np.array(normals_))
             result['sharp'].append(np.array(sharps_))
             result['blur'].append(np.array(blurs_))
-            result['K'].append(np.array(Ks_))
+            result['Kmat'].append(np.array(Ks_))
+            result['scale'].append(np.array(scales_))
             result['idx'].append(np.array(indexes_))
             result['idx_board'].append(np.array(indexes_board_))
             result['size_patch'].append(size_patch)
+            if infos_focus is not None:
+                result['focus'].append(np.array(focuses_))
                 
         return result
     
-    def detect_circle_from_img(self, img, minsize, corners, size_patch):
+    def detect_circle_from_img(self, img, minsize, corners, size_patch, rotz):
         
         circles = []
         max_radius = 0
         numpatch = len(corners)
-        img = (img - img.min()) / (img.max() - img.min()) * 255
+        nimg = (img - img.min()) / (img.max() - img.min()) * 255
         
         # Setup SimpleBlobDetector parameters.
         blobParams = cv2.SimpleBlobDetector_Params()
@@ -612,20 +652,24 @@ class Calibration(object):
         blobParams.filterByInertia = self.blob_cfg.blobParams.filterByInertia
         blobParams.minInertiaRatio = self.blob_cfg.blobParams.minInertiaRatio
         
+        # crop to get patch
+        corners_patch = np.mean(corners, axis=1)  # [N, 2]
+        patch = subpixel_cropper_batch(np.float32(nimg), corners_patch, size_patch, mode='bilinear', as_numpy=False)
+        patch = rotate(patch[:, None], angle=rotz.repeat(len(patch)), mode='bilinear', padding_mode='border').squeeze().numpy()
+        startpoint = np.stack([corners_patch[:, 0] - size_patch / 2, corners_patch[:, 1] - size_patch / 2], axis=1)
+        
         for i in range(numpatch):
             
-            # crop to get patch
-            corners_patch = np.mean(corners[i, :, :], axis=0)  # [2, 1]
-            patch, startpoint = subpixel_cropper(np.float32(img), corners_patch, size_patch)
-            patch = (patch + np.rot90(patch, 1) + np.rot90(patch, 2) + np.rot90(patch, 3)) / 4.0
-            mask_patch = patch > self.blob_cfg.blobParams.minthres
+            # masking by threshold
+            patch_ = (patch[i] + np.fliplr(patch[i])) * 0.5
+            mask_patch = patch_ > self.blob_cfg.blobParams.minthres
             
             # Create a detector with the parameters
             blobParams.minArea = int(np.round(minsize[i]))  # minArea may be adjusted to suit for your experiment
             blobDetector = cv2.SimpleBlobDetector_create(blobParams)
 
             # detect circles in gray image
-            masked_patch = (255 - patch).astype('uint8') * mask_patch
+            masked_patch = (255 - patch_).astype('uint8') * mask_patch
             keypoints = blobDetector.detect(masked_patch)
             scale = 1.0
             if len(keypoints) == 0:  # consider the case because of blur
@@ -642,14 +686,16 @@ class Calibration(object):
             
             if len(keypoints) > 1:  # too many circles are detected
                 # masking (condition)
-                masker = np.asarray([key.size * scale > minsize[i] for key in keypoints])
+                masker_size = np.array([key.size * scale > minsize[i] for key in keypoints])
+                masker_pt = np.array([np.linalg.norm(key.pt * np.array([scale, scale]) + startpoint[i] - corners_patch[i]) <= 20 for key in keypoints])
+                masker = np.logical_and(masker_size, masker_pt[:, None])
                 keypoints = self.refine_detection(keypoints, masker)
                 
             if len(keypoints) == 0:
                 circles.append([])
             else:
                 keypoints[0].pt *= np.array([scale, scale])
-                keypoints[0].pt += startpoint
+                keypoints[0].pt += startpoint[i]
                 keypoints[0].size *= scale
                 circles.append(keypoints[0])
                 max_radius = max(max_radius, keypoints[0].size)

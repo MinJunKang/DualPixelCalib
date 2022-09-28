@@ -104,7 +104,6 @@ def initialize(board_info):
         offset_x = offset
         offset_y = (res_y + 2 * (offset - 1) - grid_size * num_y_square) / 2
     offsets = [offset_x, offset_y, grid_size]
-    iboard[iboard == 0] = 80
 
     return iboard, offsets
 

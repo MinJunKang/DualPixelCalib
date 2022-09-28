@@ -30,7 +30,6 @@ class Configuration(object):
         self.config['load_ckpt_name'] = args.load_ckpt_name
 
         # learning setting
-        self.config['init_lr'] = 0.0001  # learning rate
         self.config['optim'] = 'adamw'  # [adam, adamw, radam]
         self.config['accelerator'] = 'dp'  # DP or DDP
         self.config['precision'] = 32  # 32 bit or 16 bit
@@ -43,10 +42,11 @@ class Configuration(object):
         self.config.update(args_data)
 
         # read data's config
-        data_info = np.load('dataset/%s/general_config.npy' % args.calibname, allow_pickle=True).item()
+        data_info = np.load('dataset/%s/general_info.npy' % args.calibname, allow_pickle=True).item()
         self.config.update(data_info)
 
         # additional setting
+        self.config['num_workers_img'] = 16
         self.config['num_workers'] = self.config['batch_size']
         self.config['sync_batch'] = True if self.config['accelerator'] is 'ddp' else False
 

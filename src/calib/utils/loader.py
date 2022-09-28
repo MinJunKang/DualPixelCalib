@@ -4,7 +4,6 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.utils.data as data
-import torchvision.transforms.functional as FT
 from scipy.ndimage import convolve1d, gaussian_filter1d
 
 
@@ -48,18 +47,18 @@ class DPCalloader(data.Dataset):
         self.repeat = repeat
         
         # collected data
-        self.intmats = data['K']
-        self.cleans = data['sharp']
-        self.blurs = data['blur']
-        self.depths = data['depth']
-        self.normals = data['normal']
-        self.uv_coord = data['uv_coord']
-        pdb.set_trace()
+        self.num_level = len(opt.model_cfg.scales)
+        self.intmats = data['Kmat'] # [N_patch, 3, 3] * level
+        self.normals = data['normal']  # [N_patch, 3] * level
+        self.cleans = data['sharp']  # [N_patch, 1, H, W] * level
+        self.focus = data['focus']  # [N_patch, 1, H, W] * level
+        self.blurs = data['blur']  # [N_patch, 1, H, W] * level
+        self.depths = data['depth']  # [N_patch, 1, H, W] * level
+        self.uv_coord = data['uv_coord']  # [N_patch, 1, H, W, 2] * level
         
         # Since the depth label of PSF is imbalanced, adapt "Delving into Deep Imbalanced Regression (ICML'21)" to regress imbalance
         # For LDS method, compute effective label density and re-weight
-        depth = data[0]['DPc_patch']['depth']
-        self.weights_LDS, self.min_depth, self.max_depth = self.calc_reweight_LDS(depth)
+        self.weights_LDS, self.min_depth, self.max_depth = self.calc_reweight_LDS(data['depth'][0])
         
     def gauss1d_kernel_LDS(self):
         half_ks = (self.opt.LDS_ks - 1) // 2
@@ -73,52 +72,73 @@ class DPCalloader(data.Dataset):
         bins_number = np.sqrt(bins_number)
         kernel_window = self.gauss1d_kernel_LDS()
         smoothed_bins = convolve1d(bins_number, weights=kernel_window, mode='reflect')
-        scaling = np.sum(bins_number) / np.sum(np.array(bins_number) / np.array(smoothed_bins))
-        weights = np.float32(scaling / smoothed_bins)
+        scaling = np.sum(bins_number) / np.sum(np.array(bins_number) / (np.array(smoothed_bins) + 1e-6))
+        weights = np.float32(scaling / (smoothed_bins + 1e-6)).clip(0, 1)
         return weights, depth_all.min(), depth_all.max()
         
     def __getitem__(self, index):
         
-        # convert to PIL
-        cleans = Image.fromarray(np.squeeze(self.cleans[index]) / 255.0)
-        blurs = Image.fromarray(np.squeeze(self.blurs[index]))
-        depths = Image.fromarray(np.squeeze(self.depths[index]))
-        if self.repeat:
-            normal = np.repeat(self.normals[index][None, :], depths.size[0] * depths.size[1], axis=0)
-            normal = np.float32(normal.reshape(depths.size[1], depths.size[0], 3))
-            intmat = np.repeat(self.intmats[index][None, :, :], depths.size[0] * depths.size[1], axis=0)
-            intmat = np.float32(intmat.reshape(depths.size[1], depths.size[0], -1))
-            magnitude = np.sqrt(np.sum(np.square(normal), axis=2))
-            normal = normal / np.dstack((magnitude, magnitude, magnitude))
-        else:
-            normal = np.float32(self.normals[index][:, None])
-            intmat = np.float32(self.intmats[index][:, :, None])
-            magnitude = np.sqrt(np.sum(np.square(normal), axis=0))
-            normal = normal / np.stack((magnitude, magnitude, magnitude))
-        
-        # convert to tensor
-        cleant = FT.to_tensor(cleans)
-        blurt = FT.to_tensor(blurs)
-        deptht = FT.to_tensor(depths)
-        uv_coordt = FT.to_tensor(np.squeeze(self.uv_coord[index]))
-        normalt = FT.to_tensor(normal)
-        intmatt = FT.to_tensor(intmat)
-        
-        # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
-        if self.opt.use_LDS:
-            ind = (depths - self.min_depth) / (self.max_depth - self.min_depth) * (int(self.opt.level / self.opt.LDS_step) - 1)
-            ind_0 = np.int64(ind)
-            ind_1 = np.clip(ind_0 + 1, 0, int(self.opt.level / self.opt.LDS_step) - 1)
-            val_0 = self.weights_LDS[ind_0]
-            val_1 = self.weights_LDS[ind_1]
-            weight = np.float32(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
-        else:
-            weight = np.float32(np.ones_like(depths))
-        weightt = FT.to_tensor(weight)
-        
-        sample_out = {'clean': cleant, 'blur': blurt, 'depth': deptht, 'normal': normalt, 'weight': weightt, 'uv_coord': uv_coordt, 'intmat': intmatt}
+        sample_out = dict()
+        for i in range(self.num_level):
+            sample_out.update({'clean_{}'.format(i): [], 'blur_{}'.format(i): [], 'focus_{}'.format(i): [], 
+                               'depth_{}'.format(i): [], 'normal_{}'.format(i): [], 'weight_{}'.format(i): [], 
+                               'uv_coord_{}'.format(i): [], 'intmat_{}'.format(i): []})
+            
+            # normal and intrinsics
+            normal = np.float32(self.normals[i][index])
+            intmat = np.float32(self.intmats[i][index])
+            normal_norm = np.linalg.norm(normal, axis=-1, keepdims=True)
+            normal = normal / normal_norm
+            sample_out['normal_{}'.format(i)] = torch.tensor(normal[None])  # [1, 3]
+            sample_out['intmat_{}'.format(i)] = torch.tensor(intmat[None])  # [1, 3, 3]
+            
+            # preprocess data
+            cleans = np.float32(self.cleans[i][index] / 255.0)
+            depths = np.float32(self.depths[i][index])
+            blurs = np.float32(self.blurs[i][index])
+            focus = np.float32(self.focus[i][index])
+            
+            # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
+            if self.opt.use_LDS:
+                ind = (depths - self.min_depth) / (self.max_depth - self.min_depth) * (int(self.opt.level / self.opt.LDS_step) - 1)
+                ind_0 = np.int64(ind)
+                ind_1 = np.clip(ind_0 + 1, 0, int(self.opt.level / self.opt.LDS_step) - 1)
+                val_0 = self.weights_LDS[ind_0]
+                val_1 = self.weights_LDS[ind_1]
+                weight = np.float32(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
+            else:
+                weight = np.ones_like(depths)
+            
+            # convert to tensor
+            # each tensor is in [X, Y, Z] coordinate
+            sample_out['clean_{}'.format(i)] = torch.tensor(cleans)  # [1, H, W]
+            sample_out['blur_{}'.format(i)] = torch.tensor(blurs)  # [1, H, W]
+            sample_out['focus_{}'.format(i)] = torch.tensor(focus)  # [1, H, W]
+            sample_out['depth_{}'.format(i)] = torch.tensor(depths)  # [1, H, W]
+            sample_out['weight_{}'.format(i)] = torch.tensor(weight)  # [1, H, W]
+            sample_out['uv_coord_{}'.format(i)] = torch.tensor(self.uv_coord[i][index].transpose(0, 3, 1, 2)[0])  # [1, 2, H, W]
         
         return sample_out
     
+    def calib_collate_fn(self, batch):
+        output = dict()
+        for i in range(self.num_level):
+            output_i = dict()
+            for element in batch:
+                for key in element.keys():
+                    if '_{}'.format(i) not in key:
+                        continue
+                    rkey = key.replace('_{}'.format(i), '')
+                    if rkey not in output_i.keys():
+                        output_i[rkey] = []
+                    output_i[rkey].append(element[key])
+            for key in output_i.keys():
+                if key not in output.keys():
+                    output[key] = []
+                output[key].append(torch.stack(output_i[key], dim=0))
+        return output
+    
     def __len__(self):
-        return len(self.cleans)
+        return len(self.blurs[0])
+    
+    

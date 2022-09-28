@@ -1,0 +1,41 @@
+{
+    "device": "dslr",
+    "size_square_mm": 41,
+    "fnumber_dslr": 2.8,
+    "focus_phone": 10.2,
+
+    "use_LDS": false,
+    "LDS_step": 0.5,
+    "LDS_ks": 5,
+    "LDS_sigma": 2,
+    "use_lr": false,
+    "use_mpi": true,
+
+    "batch_size": 4,
+    "epoch": 200,
+    
+    "optim": "madam",
+    "init_lr": 0.0001,
+
+    "model_cfg": {
+        "psfV_minsize": 32,
+        "level": 64,
+        "feape": 2,
+        "vox_channel": 6,
+        "mlp_channel": 64,
+
+        "patch_margin": 1.5,
+        "grad_thres": 0.05,
+
+        "use_tv": true,
+        "strategy": "singlegrid",
+        "depth_varying": true,
+        "loss_weights": [1.0, 1.0, 0.01, 1.5e-4],
+        "record_epoch": 10,
+        "num_vis": 16,
+        "scales": [0.5, 1.0, 2.0],
+        "milestones": [50, 100],
+        "use_voxlr": true,
+        "lrate_decay": 0.1
+    }
+}
