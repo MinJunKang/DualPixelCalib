@@ -25,4 +25,6 @@ git clone --recursive https://github.com/MinJunKang/DualPixelCalib.git
 ## 4. pip install -r requirements.txt (Docker will be provided later)
 
 ## 5. calibration command
+```
 python main_calibrate.py --calibname [dataset name] --model vox_mixed --config config_nomlp
+```
