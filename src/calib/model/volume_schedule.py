@@ -28,9 +28,10 @@ class Volume_Scheduler(Callback):
             
             # update psf volume parameters
             pl_module.stage = current_stage
-            pl_module.psfV_scale = self.psfV_scales[current_stage]
-            newsize = (pl_module.levels[current_stage], pl_module.psfV_sizes[current_stage], pl_module.psfV_sizes[current_stage])
-            pl_module.psf_volume.scale_volume_grid(newsize)
+            if self.opt.model_cfg.strategy == 'singlegrid':
+                pl_module.psfV_scale = self.psfV_scales[current_stage] / self.psfV_scales[0]
+                newsize = (pl_module.levels[current_stage], pl_module.psfV_sizes[current_stage], pl_module.psfV_sizes[current_stage])
+                pl_module.psf_volume.scale_volume_grid(newsize)
             
             # reset optimizer's parameters
             for param in optimizer.param_groups:

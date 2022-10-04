@@ -13,17 +13,17 @@ from kornia.filters import Laplacian, spatial_gradient, GaussianBlur2d
 
 import pytorch_lightning as pl
 
+from src.calib.utils.metric import CalibMetric
 from src.calib.model.grid import PSFGrid
-from src.calib.extern.pacnet.pac import conv2d  # TODO: change to own implementation (spatially varying conv)
 
-# from src.calib.utils.metric import CalibMetric
 from src.calib.utils.loader import normalize, masked_mean
 from src.calib.psflearner import optimizer_selector
-# from src.calib.utils.visualizer import visualize_PSFVolume, visualize_PSFVolume_test, visualize_samples
+from src.calib.utils.visualizer import visualize_PSFVolume, visualize_samples, tb_image
 
+from src.calib.extern.pacnet.pac import conv2d
 
 def positional_encoding(positions, freqs):
-    freq_bands = 2**torch.arange(freqs, dtype=torch.float32, device=positions.device)*np.pi  # (F,)
+    freq_bands = 2**torch.arange(freqs, dtype=positions.dtype, device=positions.device)*np.pi  # (F,)
     pts = (positions[..., None] * freq_bands).reshape(
         positions.shape[:-1] + (freqs * positions.shape[-1], ))  # (..., DF)
     pts = torch.cat([torch.sin(pts), torch.cos(pts)], dim=-1)
@@ -40,8 +40,16 @@ class MLP_Fea(torch.nn.Module):
         layer2 = torch.nn.Linear(featureC, featureC)
         layer3 = torch.nn.Linear(featureC, 1)
 
-        self.mlp = torch.nn.Sequential(layer1, torch.nn.ReLU(inplace=True), layer2, torch.nn.ReLU(inplace=True), layer3)
-        torch.nn.init.constant_(self.mlp[-1].bias, 0)
+        self.mlp = torch.nn.Sequential(layer1, 
+                                       torch.nn.ReLU(inplace=True), 
+                                       layer2, 
+                                       torch.nn.ReLU(inplace=True), 
+                                       layer3)
+        
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                m.bias.data.zero_()
 
     def forward(self, pts, features):
         indata = [pts, features]
@@ -49,10 +57,11 @@ class MLP_Fea(torch.nn.Module):
         if self.feape > 0:
             indata += [positional_encoding(features, self.feape)]
         mlp_in = torch.cat(indata, dim=-1)
-        psf = self.mlp(mlp_in)
-        psf = torch.abs(psf)
+        
+        with torch.cuda.amp.autocast():
+            psf = self.mlp(mlp_in)
 
-        return psf
+        return psf.abs()
 
 
 class PSFVolume(pl.LightningModule):
@@ -70,7 +79,7 @@ class PSFVolume(pl.LightningModule):
         self.levels = [int(opt.model_cfg.level * scale / opt.model_cfg.scales[-1]) for scale in opt.model_cfg.scales]
         
         # define volume size
-        psfV_sizes = [int(opt.model_cfg.psfV_minsize * scale / opt.model_cfg.scales[0]) for scale in opt.model_cfg.scales]
+        psfV_sizes = [int(opt.model_cfg.psfV_maxsize * scale / opt.model_cfg.scales[-1]) for scale in opt.model_cfg.scales]
         self.psfV_sizes = [psfV_size + 1 if psfV_size % 2 == 0 else psfV_size for psfV_size in psfV_sizes]  # odd number
         
         # define kernel size in uv space
@@ -80,15 +89,16 @@ class PSFVolume(pl.LightningModule):
         
         # coarse to fine learning
         self.stage = 0  # progressive training stage (0 ~ N - 1)
+        self.idx_ref = opt.model_cfg.scales.index(1.0)
         self.psfV_scale = self.opt.model_cfg.scales[self.stage] / opt.model_cfg.scales[0]
         
         # define PSF Volume
         if opt.model_cfg.strategy == 'singlegrid':
-            self.psf_volume = PSFGrid(opt.model_cfg.vox_channel, [self.levels[0]], [self.psfV_sizes[0]]) # [C, L, P, P]
-            self.in_channel = opt.model_cfg.vox_channel
+            self.psf_volume = PSFGrid(opt, [self.levels[0]], [self.psfV_sizes[0]]) # [C, L, P, P]
+            self.out_channel = opt.model_cfg.vox_channel
         elif opt.model_cfg.strategy == 'multigrid':
-            self.psf_volume = PSFGrid(opt.model_cfg.vox_channel, self.levels, self.psfV_sizes) # [C, L, P, P]
-            self.in_channel = opt.model_cfg.vox_channel * len(self.levels)
+            self.psf_volume = PSFGrid(opt, self.levels, self.psfV_sizes) # [C, L, P, P]
+            self.out_channel = opt.model_cfg.vox_channel * len(self.levels)
         else:
             raise NotImplementedError
         
@@ -98,15 +108,12 @@ class PSFVolume(pl.LightningModule):
         self.gaussian = GaussianBlur2d(kernel_size=(7, 7), sigma=(1.5, 1.5), border_type='constant')
         
         # MLPs for PSF volume
-        self.mlp_FE = MLP_Fea(self.in_channel, feape=opt.model_cfg.feape, featureC=opt.model_cfg.mlp_channel)
+        if self.opt.model_cfg.vox_channel > 3:  # at least rgb channel
+            self.mlp_FE = MLP_Fea(self.out_channel, feape=opt.model_cfg.feape, featureC=opt.model_cfg.mlp_channel)
         
         # register parameters
         self.register_parameter('min_depth', Parameter(torch.tensor(self.depth_range[0]), requires_grad=False))
         self.register_parameter('max_depth', Parameter(torch.tensor(self.depth_range[1]), requires_grad=False))
-        
-        # visualization setting
-        self.record_epoch = opt.model_cfg.record_epoch
-        self.num_vis = opt.model_cfg.num_vis
         
     def model_setting(self, cfg):
         
@@ -118,6 +125,9 @@ class PSFVolume(pl.LightningModule):
         self.psf_prj_scale = np.array(cfg['psf_prj_scale'])
         self.psf_prj_size = np.ceil(self.max_psf_uvsize * self.psf_prj_scale)
         self.psf_prj_size[self.psf_prj_size % 2 == 0] += 1  # odd number
+        
+        # metric logger
+        self.metric_logger = CalibMetric(self.resultpath)
         
     def gradient_apply(self, feat, clean, mask=None):
         
@@ -139,6 +149,7 @@ class PSFVolume(pl.LightningModule):
     def CharbonnierLoss_L1(self, x, scale=0.1):
         # alpha=1: Charbonnier/pseudo-Huber loss.
         assert torch.is_tensor(x)
+        scale = np.float16(scale) if self.opt.precision == 16 else scale
         
         # This will be used repeatedly.
         squared_scaled_x = (x / scale) ** 2
@@ -147,6 +158,7 @@ class PSFVolume(pl.LightningModule):
     def CharbonnierLoss_L2(self, x, scale=0.1):
         # alpha=2: L2 loss.
         assert torch.is_tensor(x)
+        scale = np.float16(scale) if self.opt.precision == 16 else scale
         
         # This will be used repeatedly.
         squared_scaled_x = (x / scale) ** 2
@@ -165,8 +177,8 @@ class PSFVolume(pl.LightningModule):
         Returns:
             (float) structural similarity measure
         """
-        C1 = 0.01 ** 2
-        C2 = 0.03 ** 2
+        C1 = np.float16(0.01 ** 2) if self.opt.precision == 16 else 0.01 ** 2
+        C2 = np.float16(0.03 ** 2) if self.opt.precision == 16 else 0.03 ** 2
 
         mu_x = torch.nn.AvgPool2d(3, 1)(x)
         mu_y = torch.nn.AvgPool2d(3, 1)(y)
@@ -197,48 +209,60 @@ class PSFVolume(pl.LightningModule):
             After tedious calculation, max_xy = max(max_psfV_size / fx, max_psfV_size / fy) * min_depth
         '''
         fx, fy = K_mat[:, 0, 0], K_mat[:, 1, 1]
-        return torch.max(self.max_psf_uvsize / fx, self.max_psf_uvsize / fy) * self.max_depth  # [B]
+        return torch.max(self.max_psf_uvsize / fx, self.max_psf_uvsize / fy) * self.min_depth  # [B]
     
+    @torch.no_grad()
     def prepare_inputs(self, batch):
         
         # inputs
-        clean = batch['clean'][self.stage]
-        blur = batch['blur'][self.stage]
-        focus = batch['focus'][self.stage]
-        depth = batch['depth'][self.stage]
-        normal = batch['normal'][self.stage]
-        intmat = batch['intmat'][self.stage]
-        uvcoord = batch['uv_coord'][self.stage]
+        # clean = batch['clean'][self.stage]
+        # blur = batch['blur'][self.stage]
+        # focus = batch['focus'][self.stage]
+        # depth = batch['depth'][self.stage]
+        # normal = batch['normal'][self.stage]
+        # intmat = batch['intmat'][self.stage]
+        # invKmat = batch['invKmat'][self.stage]
+        # uvcoord = batch['uv_coord'][self.stage]
+        # weight = batch['weight'][self.stage]
+        
+        clean = batch['clean'][self.idx_ref]
+        blur = batch['blur'][self.idx_ref]
+        focus = batch['focus'][self.idx_ref]
+        depth = batch['depth'][self.idx_ref]
+        normal = batch['normal'][self.idx_ref]
+        intmat = batch['intmat'][self.idx_ref]
+        invKmat = batch['invKmat'][self.idx_ref]
+        uvcoord = batch['uv_coord'][self.idx_ref]
+        weight = batch['weight'][self.idx_ref]
         
         # masking and calculate bounds
         mask = depth > 0
-        invKmat = torch.inverse(intmat).squeeze(1) # [B, 3, 3]
+        invKmat = invKmat.squeeze(1) # [B, 3, 3]
         psfV_max_xy = self.calc_psfVbound(intmat.squeeze(1))
-        gradient = self.gradient_apply(blur, clean, mask) * batch['weight'][self.stage]  # reweighting by LDS
-        mask = mask & (gradient > self.opt.model_cfg.grad_thres)  # mask by gradient map
-        mask = mask & (uvcoord[:, 0:1] < self.img_size[1]) & (uvcoord[:, 1:2] < self.img_size[0]) & (uvcoord[:, 0:1] > 0) & (uvcoord[:, 1:2] > 0)  # mask by image boundary
-        gradient = gradient * mask.float()
+        gradient = self.gradient_apply(blur, clean, mask) * weight  # reweighting by LDS
+        # mask = mask & (gradient > self.opt.model_cfg.grad_thres)  # mask by gradient map
+        mask = mask & (uvcoord[:, 0:1] < self.img_size[1]) & (uvcoord[:, 1:2] < self.img_size[0]) & (uvcoord[:, 0:1] >= 0) & (uvcoord[:, 1:2] >= 0)  # mask by image boundary
+        gradient = gradient.type_as(weight) * mask.type_as(weight)
         
         # normalize input
-        clean = normalize(clean, mask)  # [B, C, H, W]
-        blur = normalize(blur, mask)  # [B, C, H, W]
+        clean = normalize(clean, mask).type_as(weight)  # [B, C, H, W]
+        blur = normalize(blur, mask).type_as(weight)  # [B, C, H, W]
+        focus = normalize(focus, mask).type_as(weight)  # [B, C, H, W]
         
         return clean, blur, focus, depth, normal, mask, gradient, invKmat, psfV_max_xy, uvcoord
     
-    def forward(self, batch, record_results=True):
+    def forward(self, batch, record_psfV=True):
         
         # prepare inputs
-        psf_prj_sz = int(self.psf_prj_size[self.stage])
+        # psf_prj_sz = int(self.psf_prj_size[self.stage])
+        psf_prj_sz = int(self.psf_prj_size[self.idx_ref])
         clean, blur, focus, depth, normal, mask, gradient, invKmat, psfV_max_xy, uvcoord = self.prepare_inputs(batch)
-        
-        # masking
-        batchnum = clean.shape[0]
-        index = torch.arange(clean.numel(), device=clean.device)  # [B * 1 * H * W]
-        index_masked = index.view(*clean.shape).permute(0, 2, 3, 1)[mask.squeeze(1)]  # [N, 1]
+        b, c, h, w = clean.shape
         
         # coordinate from (u, v, 1) to (x, y, z)
         norm_coord = torch.cat([uvcoord, torch.ones_like(depth)], dim=1)  # [B, 3, H, W]
-        xyz_coord = torch.einsum('bij,bjhw->bihw', invKmat, norm_coord) * depth  # [B, 3, H, W]
+        xyz_coord = torch.einsum('bij,bjhw->bihw', invKmat, norm_coord) * 1500
+        # xyz_coord = torch.einsum('bij,bjhw->bihw', invKmat, norm_coord) * depth  # [B, 3, H, W]
         
         # Unfolding
         clean_unfold = F.unfold(clean, psf_prj_sz, 1, psf_prj_sz // 2, 1)  # [B, 1 * PSFsize * PSFsize, H * W]
@@ -253,22 +277,34 @@ class PSFVolume(pl.LightningModule):
         coord_unfold = rearrange(coord_unfold, 'b c kh kw l -> b l kh kw c')  # [B, H * W, PSFsize, PSFsize, 3]
         
         # masking unwanted area
-        coord_unfold = coord_unfold[mask.view(batchnum, -1)]  # [N, PSFsize, PSFsize, 3]
-        clean_unfold = clean_unfold[mask.view(batchnum, -1)]  # [N, PSFsize, PSFsize, 1]
+        index = rearrange(torch.arange(clean.numel(), device=clean.device).view(*clean.shape), 'b c h w -> (b h w) c')[mask.view(-1)]  # [N, 1]
+        coord_unfold = coord_unfold[mask.view(b, -1)]  # [N, PSFsize, PSFsize, 3]
+        clean_unfold = clean_unfold[mask.view(b, -1)]  # [N, PSFsize, PSFsize, C]
         
-        # sample kernel from PSF Volume
-        kernel_feat = self.psf_volume(coord_unfold[None])  # [1, C, N, PSFsize, PSFsize]
-        coord_unfold = rearrange(coord_unfold, 'n kh kw c -> n (kh kw) c')
-        kernel_feat = rearrange(kernel_feat, '1 c n kh kw -> n (kh kw) c')
-        clean_unfold = rearrange(clean_unfold, 'n kh kw c -> n (kh kw) c')
-        kernel = self.mlp_FE(coord_unfold, kernel_feat)
+        # sample kernel feature from PSF Volume
+        kernel_feat = self.psf_volume(coord_unfold[None])  # [1, C_kernel, N, PSFsize, PSFsize]
         
-        # spatially varying conv
-        output = segment_coo(src=(kernel * clean_unfold).sum(dim=1).view(-1), 
-                             index=index_masked.view(-1), 
-                             out=torch.zeros([clean.numel()], device=clean.device), 
-                             reduce='sum')
-        output = output.view(*clean.shape)
+        # MLP
+        if self.opt.model_cfg.vox_channel > c:
+            kernel_feat = rearrange(kernel_feat, '1 c n kh kw -> n (kh kw) c')
+            coord_unfold = rearrange(coord_unfold, 'n kh kw c -> n (kh kw) c')
+            clean_unfold = rearrange(clean_unfold, 'n kh kw c -> n (kh kw) c')
+            kernel = self.mlp_FE(coord_unfold, kernel_feat)  # [N, PSFsize * PSFsize, C]
+        else:
+            assert(self.opt.model_cfg.vox_channel == c)
+            kernel = rearrange(kernel_feat, '1 c n kh kw -> n (kh kw) c')  # [N, PSFsize * PSFsize, C]
+            clean_unfold = rearrange(clean_unfold, 'n kh kw c -> n (kh kw) c')
+        
+        # spatially varying convolution
+        # convolved = (kernel * clean_unfold.contiguous()).sum(dim=1)  # [N, C]
+        # output = segment_coo(src=convolved.flatten(), 
+        #                      index=index.flatten(), 
+        #                      out=torch.zeros_like(clean).view(-1), 
+        #                      reduce='sum')
+        # output = output.view(*clean.shape)
+        
+        kernel_ = rearrange(kernel, '(h w) (kh kw) c -> 1 c kh kw h w', kh=psf_prj_sz, kw=psf_prj_sz, h=h, w=w)
+        output = conv2d(clean, kernel_, kernel_size=psf_prj_sz, stride=1, padding=psf_prj_sz // 2, dilation=1)
         
         loss = dict()
         # Reconstruction Loss (Reblur Loss)
@@ -280,64 +316,90 @@ class PSFVolume(pl.LightningModule):
         # L1 regularization Loss
         loss.update({'loss_l1': self.opt.model_cfg.loss_weights[2]* torch.mean(torch.norm(kernel, p=1, dim=1))})  # type: ignore
         
-        if not self.training:
-            '''
-                Render full psf volume for visualization
-            '''
-            psfVolume_full = None
-        else:
-            psfVolume_full = None
-        
-        if record_results:
-            results = {'mask': mask, 'gradient': gradient, 'convolved': output, 'psfVolume': psfVolume_full}
-        else:
-            results = None
+        results = {'target': blur, 'mask': mask, 'gradient': gradient, 'pred': output}
+        if record_psfV:
+            
+            with torch.no_grad():
+                '''
+                    Render full psf volume for visualization
+                '''
+                full_coord = self.psf_volume.get_fullcoord(psf_prj_sz, clean.device)
+                psfV_feat = self.psf_volume(full_coord)
+                if self.opt.model_cfg.vox_channel > c:
+                    full_coord = rearrange(full_coord, '1 n kh kw c -> n (kh kw) c')
+                    psfV_feat = rearrange(psfV_feat, '1 c n kh kw -> n (kh kw) c')
+                    psfVolume_full = self.mlp_FE(full_coord, psfV_feat)
+                    psfVolume_full = rearrange(psfVolume_full, 'n (kh kw) c -> n kh kw c', kh=psf_prj_sz, kw=psf_prj_sz)
+                else:
+                    psfVolume_full = rearrange(psfV_feat, '1 c n kh kw -> n kh kw c')
+            
+            results.update({'psfVolume': psfVolume_full})
         
         return loss, results
     
     def training_step(self, batch, batch_idx):
         
-        loss, _ = self.forward(batch, record_results=False)
+        loss, results = self.forward(batch, record_psfV=False)
         
         loss_total = 0.0
         for key in loss.keys():
             self.log(key, loss[key].detach(), prog_bar=True)
             loss_total = loss_total + loss[key]
+            
+        # log loss
         self.log('total_loss', loss_total.detach(), prog_bar=True)
+        
+        # log results
+        if (batch_idx + 1) % 100 == 0:
+            tb = self.logger.experiment
+            num_vis = [self.opt.batch_size, self.opt.batch_size * 2]
+            with torch.no_grad():
+                # tb_image(tb, self.global_step, 'train', 'sharp', batch['clean'][self.stage], num_vis=num_vis)
+                tb_image(tb, self.global_step, 'train', 'sharp', batch['clean'][self.idx_ref], num_vis=num_vis)
+                tb_image(tb, self.global_step, 'train', 'target', results['target'], num_vis=num_vis)
+                tb_image(tb, self.global_step, 'train', 'pred', results['pred'], num_vis=num_vis)
+            torch.cuda.empty_cache()
         
         return loss_total
     
     def validation_step(self, batch, batch_idx):
-        if (self.current_epoch + 1) % self.record_epoch == 0:
-            loss, results = self.forward(batch)
+        
+        # run forward
+        _, results = self.forward(batch, record_psfV=(batch_idx == 0))
+        
+        # visualize volume
+        if batch_idx == 0:
+            visualize_PSFVolume(results['psfVolume'], self.min_depth, self.max_depth, self.resultpath, ep=self.current_epoch + 1)
             
-            # visualize volume
-            # if batch_idx == 0:
-            #     visualize_PSFVolume(self.psf_volume[0, 0], self.min_depth, self.max_depth, self.params['savepath'], self.current_epoch + 1)
-                
-            # # calculate metrics
-            # metrics = self.metric_logger.measure(batch, results)
-                
-            # # visualize results
-            # if batch_idx in self.sampled_index:
-            #     sample_name = '_sample%04d_rmse_%.5f' % (batch_idx + 1, metrics['rmse'])
-            #     visualize_samples(batch, results, self.params['savepath'], self.current_epoch + 1, sample_name)
+        # calculate metrics (PSNR, SSIM, LPIPS)
+        metrics = self.metric_logger.measure(results)
+        for key in metrics.keys():
+            self.log(key + '_val', torch.tensor(metrics[key]), prog_bar=True)
+            
+        tb = self.logger.experiment
+        # tb_image(tb, self.global_step, 'val', 'sharp', batch['clean'][self.stage], num_vis=[1, 2])
+        tb_image(tb, self.global_step, 'val', 'sharp', batch['clean'][self.idx_ref], num_vis=[1, 2])
+        tb_image(tb, self.global_step, 'val', 'target', results['target'], num_vis=[1, 2])
+        tb_image(tb, self.global_step, 'val', 'pred', results['pred'], num_vis=[1, 2])
+            
+        # visualize results
+        if batch_idx in self.sampled_index:
+            # visualize_samples(batch, results, self.stage, self.resultpath, it=batch_idx + 1, ep=self.current_epoch + 1, rmse=metrics['rmse'])
+            visualize_samples(batch, results, self.idx_ref, self.resultpath, it=batch_idx + 1, ep=self.current_epoch + 1, rmse=metrics['rmse'])
                 
     def validation_epoch_end(self, outputs):
-        if (self.current_epoch + 1) % self.record_epoch == 0:
-            # metric evaluation in this step
-            print('Metric results summary : ')
-            # results, t = self.metric_logger.get_value(use_chart=True)
-            # if t is not None:
-            #     print(t.draw())
+        # metric evaluation in this step
+        print('Metric results summary : ')
+        _, t = self.metric_logger.get_value(use_chart=True)
+        if t is not None:
+            print(t.draw())
     
     def configure_optimizers(self):
         # optimizer and schedular
         optimizer = optimizer_selector(self.parameters(), self.opt)
         
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, 
-                                                      lr_lambda=lambda epoch: self.opt.model_cfg.lrate_decay ** (epoch / self.opt.epoch), 
-                                                      last_epoch=-1, verbose=False)
+        lrate_decay = (self.opt.end_lr / self.opt.init_lr) ** (1 / self.opt.epoch)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lrate_decay)
         
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
     

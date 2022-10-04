@@ -11,31 +11,31 @@
     "use_lr": false,
     "use_mpi": true,
 
-    "batch_size": 4,
-    "epoch": 200,
+    "batch_size": 1,
+    "epoch": 80,
     
-    "optim": "madam",
+    "optim": "adam",
     "init_lr": 0.0001,
+    "end_lr": 0.00001,
 
     "model_cfg": {
-        "psfV_minsize": 32,
-        "level": 64,
-        "feape": 2,
+        "psfV_maxsize": 64,
+        "level": 32,
+        "feape": 0,
         "vox_channel": 6,
-        "mlp_channel": 64,
+        "mlp_channel": 16,
 
         "patch_margin": 1.5,
-        "grad_thres": 0.05,
+        "grad_thres": 0.04,
 
         "use_tv": true,
         "strategy": "singlegrid",
         "depth_varying": true,
-        "loss_weights": [1.0, 1.0, 0.01, 1.5e-4],
+        "loss_weights": [1.0, 1.0, 0.1, 1.5e-3],
         "record_epoch": 10,
         "num_vis": 16,
-        "scales": [0.5, 1.0, 2.0],
-        "milestones": [50, 100],
-        "use_voxlr": true,
-        "lrate_decay": 0.1
+        "scales": [0.6, 0.8, 1.0, 1.2],
+        "milestones": [15, 31, 45],
+        "use_voxlr": true
     }
 }

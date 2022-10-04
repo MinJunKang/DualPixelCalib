@@ -687,7 +687,7 @@ class Calibration(object):
             if len(keypoints) > 1:  # too many circles are detected
                 # masking (condition)
                 masker_size = np.array([key.size * scale > minsize[i] for key in keypoints])
-                masker_pt = np.array([np.linalg.norm(key.pt * np.array([scale, scale]) + startpoint[i] - corners_patch[i]) <= 20 for key in keypoints])
+                masker_pt = np.array([np.linalg.norm(key.pt * np.array([scale, scale]) + startpoint[i] - corners_patch[i]) <= 10 * scale for key in keypoints])
                 masker = np.logical_and(masker_size, masker_pt[:, None])
                 keypoints = self.refine_detection(keypoints, masker)
                 

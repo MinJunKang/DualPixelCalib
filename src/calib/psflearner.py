@@ -4,7 +4,6 @@ import torch
 import numpy as np
 from pathlib import Path
 from runpy import run_path
-from functools import partial
 from torch.utils.data import DataLoader
 
 from pytorch_lightning import Trainer
@@ -36,18 +35,19 @@ class PSFLearner(object):
         '''
         
         # savepath
+        cfg_name = self.opt.config.replace('config', '')
         rootpath = makedir_custom(Path('workspace'))  # rootpath
         rootpath = makedir_custom(rootpath / self.opt.calibname)  # workspace
         rootpath = makedir_custom(rootpath / ('%s_%s' % (self.board.tag, type)))  # workspace
-        modelpath = makedir_custom(rootpath / self.opt.model)  # model workspace (save model related files here)
+        modelpath = makedir_custom(rootpath / (self.opt.model + cfg_name), True)  # model workspace (save model related files here)
         ckptpath = makedir_custom(modelpath / 'ckpt')  # ckpt workspace (save checkpoint here)
         resultpath = makedir_custom(modelpath / 'result')  # save result here
         
         # Learning PSF from volume (ours)
-        logger = pl_loggers.TensorBoardLogger(str(modelpath))
+        logger = pl_loggers.TensorBoardLogger(str(modelpath), name='logs')
         lr_monitor = LearningRateMonitor(logging_interval='step')
         cp_monitor = ModelCheckpoint(
-            dirpath=str(modelpath),
+            dirpath=str(ckptpath),
             filename=None,
             save_top_k=1, 
             save_last=True
@@ -83,7 +83,6 @@ class PSFLearner(object):
             logger=logger,
             callbacks=callbacks,
             enable_checkpointing=True,
-            check_val_every_n_epoch=1,
             strategy=self.opt.accelerator,
             benchmark=True,
             deterministic=False,
@@ -92,7 +91,9 @@ class PSFLearner(object):
             max_epochs=self.opt.epoch,
             sync_batchnorm=self.opt.sync_batch,
             num_sanity_val_steps=0,
-            profiler="pytorch"
+            check_val_every_n_epoch=self.opt.model_cfg.record_epoch,
+            profiler="pytorch",
+            amp_backend='native'
         )
         
         # train begin

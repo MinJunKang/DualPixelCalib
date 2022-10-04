@@ -89,7 +89,6 @@ def initialize(board_info):
     squareLength : chessboard square side length (in meters)
     markerLength : marker side length (in meters)
     '''
-
     iboard = charuco.draw((res_x, res_y), 1, 1)
 
     # padding : default is 1

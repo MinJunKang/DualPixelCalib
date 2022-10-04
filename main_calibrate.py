@@ -8,7 +8,6 @@ from src.calib.psflearner import PSFLearner
 from src.calib.detector import CalibBoard
 from src.calib.calib import Calibration
 from src.calib.utils.configure import Configuration
-
 from pytorch_lightning import seed_everything
 
 # parsing arguments
@@ -61,7 +60,6 @@ def main():
     # learn individual PSF volume
     for type in ['DPc', 'DPl', 'DPr']:
         psflearner.train(patches, raw[board.device], type=type, ckpt=opt.load_ckpt_name)
-    pdb.set_trace()
 
 
 if __name__ == '__main__':

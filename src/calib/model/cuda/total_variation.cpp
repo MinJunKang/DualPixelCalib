@@ -1,4 +1,3 @@
-// from the code "https://github.com/hustvl/TiNeuVox"
 
 #include <torch/extension.h>
 

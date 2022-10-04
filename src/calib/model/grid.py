@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
+from einops import rearrange
 
 
 # total variance loss
@@ -20,9 +21,9 @@ total_variation_cuda = load(
 
 
 class PSFGrid(nn.Module):
-    def __init__(self, channel, levels, psfVsizes, for_test=False):
+    def __init__(self, opt, levels, psfVsizes, for_test=False):
         super(PSFGrid, self).__init__()
-        self.channel = channel
+        self.channel = opt.model_cfg.vox_channel
         self.levels = levels
         self.psfVsizes = psfVsizes
         assert(len(self.levels) == len(self.psfVsizes))
@@ -32,9 +33,21 @@ class PSFGrid(nn.Module):
                 psfV_numpy = self.create_synthetic_psf(levels[i], psfVsizes[i])
                 psfVol = Parameter(1e-3*torch.from_numpy(psfV_numpy), requires_grad=False)
             else:
-                psfVol = Parameter(torch.zeros(1, channel, levels[i], psfVsizes[i], psfVsizes[i]).normal_(mean=0, std=0.0001), requires_grad=True)
+                psfVol = Parameter(torch.zeros(1, self.channel, levels[i], psfVsizes[i], psfVsizes[i]).normal_(mean=0, std=0.0001), requires_grad=True)
             Volume.append(psfVol)
         self.psfVolume = nn.ParameterList(Volume)
+        
+    def compute_grid(self, ksize, device):
+        if device is None: 
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        z_grid, y_grid, x_grid = torch.meshgrid([torch.linspace(-1.0, 1.0, self.levels[-1]), 
+                                                torch.linspace(-1.0, 1.0, ksize), 
+                                                torch.linspace(-1.0, 1.0, ksize)])
+        grid = torch.stack((x_grid, y_grid, z_grid), dim=-1).float().to(device)
+        grid = rearrange(grid, 'd h w c -> 1 d h w c')
+            
+        return grid
     
     def create_circular_mask(self, h, w, center=None, radius=None):
         '''
@@ -51,17 +64,17 @@ class PSFGrid(nn.Module):
         mask = dist_from_center <= radius
         return mask
         
-    def create_synthetic_psf(self, level, psfVsize, minsize=0.2, maxsize=0.8):
+    def create_synthetic_psf(self, level, psfVsize, minsize=0.1, maxsize=0.5):
         '''
             To validate PSF Volume and our algorithm (for debugging)
             generate cone shape psfVolume
         '''
-        min_radius = psfVsize * minsize * 0.5
-        max_radius = psfVsize * maxsize * 0.5
+        min_radius = psfVsize * minsize
+        max_radius = psfVsize * maxsize
         radius = np.linspace(min_radius, max_radius, level)
         psfV_numpy = np.zeros((1, 1, level, psfVsize, psfVsize))
         for i in range(level):
-            psfV_numpy[:, :, i] = self.create_circular_mask(psfVsize, psfVsize, (psfVsize // 2, psfVsize // 2), radius[i]) * 1.0
+            psfV_numpy[:, :, i] = self.create_circular_mask(psfVsize, psfVsize, (psfVsize // 2, psfVsize // 2), radius[i]) * 1000
         return np.float32(psfV_numpy)
     
     def scale_volume_grid(self, new_size):
@@ -85,3 +98,12 @@ class PSFGrid(nn.Module):
         for volume in self.psfVolume:
             output.append(F.grid_sample(volume, xyz, mode='bilinear', padding_mode='border', align_corners=True))
         return torch.cat(output, dim=1)
+    
+    def get_fullcoord(self, ksize, device=None):
+        
+        '''
+            Full PSF Volume with corresponding coordinates
+        '''
+        
+        coords = self.compute_grid(ksize, device=device)
+        return coords

@@ -33,7 +33,6 @@ class Configuration(object):
         self.config['optim'] = 'adamw'  # [adam, adamw, radam]
         self.config['accelerator'] = 'dp'  # DP or DDP
         self.config['precision'] = 32  # 32 bit or 16 bit
-        self.config['record_epoch'] = 5
 
         # read model's config
         with open('src/calib/model/%s/%s.json' % (args.model, args.config)) as json_file:

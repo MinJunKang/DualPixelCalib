@@ -11,30 +11,30 @@
     "use_lr": false,
     "use_mpi": true,
 
-    "batch_size": 2,
-    "epoch": 80,
+    "batch_size": 1,
+    "epoch": 100,
     
     "optim": "madam",
-    "init_lr": 0.0005,
+    "init_lr": 0.001,
     "end_lr": 0.0001,
 
     "model_cfg": {
-        "psfV_maxsize": 32,
-        "level": 16,
+        "psfV_maxsize": 64,
+        "level": 32,
         "feape": 0,
-        "vox_channel": 6,
+        "vox_channel": 1,
         "mlp_channel": 16,
 
         "patch_margin": 1.5,
-        "grad_thres": 0.06,
+        "grad_thres": 0.04,
 
         "use_tv": true,
-        "strategy": "multigrid",
+        "strategy": "singlegrid",
         "depth_varying": true,
-        "loss_weights": [1.0, 1.0, 0.01, 1.5e-4],
+        "loss_weights": [1.0, 1.0, 0.1, 1.5e-3],
         "record_epoch": 10,
         "num_vis": 16,
-        "scales": [0.4, 0.6, 0.8, 1.0],
+        "scales": [0.6, 0.8, 1.0, 1.2],
         "milestones": [15, 35, 55],
         "use_voxlr": true
     }

@@ -79,24 +79,27 @@ class DPCalloader(data.Dataset):
     def __getitem__(self, index):
         
         sample_out = dict()
+        type_det = np.float16 if self.opt.precision == 16 else np.float32
         for i in range(self.num_level):
             sample_out.update({'clean_{}'.format(i): [], 'blur_{}'.format(i): [], 'focus_{}'.format(i): [], 
                                'depth_{}'.format(i): [], 'normal_{}'.format(i): [], 'weight_{}'.format(i): [], 
-                               'uv_coord_{}'.format(i): [], 'intmat_{}'.format(i): []})
+                               'uv_coord_{}'.format(i): [], 'intmat_{}'.format(i): [], 'invKmat_{}'.format(i): []})
             
             # normal and intrinsics
-            normal = np.float32(self.normals[i][index])
-            intmat = np.float32(self.intmats[i][index])
+            normal = type_det(self.normals[i][index])
+            intmat = type_det(self.intmats[i][index])
+            invKmat = type_det(np.linalg.inv(self.intmats[i][index]))
             normal_norm = np.linalg.norm(normal, axis=-1, keepdims=True)
             normal = normal / normal_norm
             sample_out['normal_{}'.format(i)] = torch.tensor(normal[None])  # [1, 3]
             sample_out['intmat_{}'.format(i)] = torch.tensor(intmat[None])  # [1, 3, 3]
+            sample_out['invKmat_{}'.format(i)] = torch.tensor(invKmat[None])  # [1, 3, 3]
             
             # preprocess data
-            cleans = np.float32(self.cleans[i][index] / 255.0)
-            depths = np.float32(self.depths[i][index])
-            blurs = np.float32(self.blurs[i][index])
-            focus = np.float32(self.focus[i][index])
+            cleans = type_det(self.cleans[i][index] / 255.0)
+            depths = type_det(self.depths[i][index])
+            blurs = type_det(self.blurs[i][index])
+            focus = type_det(self.focus[i][index])
             
             # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
             if self.opt.use_LDS:
@@ -105,7 +108,7 @@ class DPCalloader(data.Dataset):
                 ind_1 = np.clip(ind_0 + 1, 0, int(self.opt.level / self.opt.LDS_step) - 1)
                 val_0 = self.weights_LDS[ind_0]
                 val_1 = self.weights_LDS[ind_1]
-                weight = np.float32(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
+                weight = type_det(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
             else:
                 weight = np.ones_like(depths)
             

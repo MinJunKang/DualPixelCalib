@@ -31,6 +31,10 @@ torch_optimizer
 scikit-learn
 ptflops
 easydict
+kaleido
+plotply
+dash
+texttable
 
 ## MATLAB build ##
 # which matlab -> ls -l matlab : /home/miruware/hdd1/minjun/Matlab/bin/matlab
