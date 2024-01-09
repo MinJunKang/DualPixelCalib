@@ -9,14 +9,15 @@ from src.calib.utils.geometry import convert2homography
 from src.calib.utils.file_manager import makedir_custom, check_condition
 
 
-def odd_rec_corners(num_x_square, num_y_square):
+
+def inner_rec_corners(num_x_square, num_y_square, inner_offset=1):
     
     # corners index group
-    corners1_x_idx = np.array(range(0, num_x_square + 1, 2))
-    corners2_x_idx = np.array(range(1, num_x_square + 1, 2))
-    corners1_y_idx = np.flip(np.array(range(0, num_y_square + 1, 2)))
-    corners2_y_idx = np.flip(np.array(range(1, num_y_square + 1, 2)))
-
+    corners1_x_idx = np.array(range(inner_offset, num_x_square - inner_offset, 1))
+    corners2_x_idx = np.array(range(inner_offset + 1, num_x_square + (1 - inner_offset), 1))
+    corners1_y_idx = np.flip(np.array(range(inner_offset, num_y_square - inner_offset, 1)))
+    corners2_y_idx = np.flip(np.array(range(inner_offset + 1, num_y_square + (1 - inner_offset), 1)))
+    
     # corners
     '''
         corner3      corner4
@@ -24,32 +25,6 @@ def odd_rec_corners(num_x_square, num_y_square):
 
         corner1      corner2
     '''
-    
-    corner1 = np.stack(np.meshgrid(corners1_x_idx, corners2_y_idx), axis=-1)
-    corner2 = np.stack(np.meshgrid(corners2_x_idx, corners2_y_idx), axis=-1)
-    corner3 = np.stack(np.meshgrid(corners1_x_idx, corners1_y_idx), axis=-1)
-    corner4 = np.stack(np.meshgrid(corners2_x_idx, corners1_y_idx), axis=-1)
-
-    corner1 = np.reshape(corner1, [-1, 1, 2])
-    corner2 = np.reshape(corner2, [-1, 1, 2])
-    corner3 = np.reshape(corner3, [-1, 1, 2])
-    corner4 = np.reshape(corner4, [-1, 1, 2])
-    
-    corners_loc = np.concatenate([corner1, corner2, corner3, corner4], axis=1)  # [N, 4, 2]
-    
-    # get corners' aruco idx
-    corners_idx = corners_loc[:, :, 0] + (num_y_square - corners_loc[:, :, 1]) * (num_x_square + 1)
-
-    return corners_loc, corners_idx
-
-
-def even_rec_corners(num_x_square, num_y_square):
-    
-    # corners index group
-    corners1_x_idx = np.array(range(1, num_x_square, 2))
-    corners2_x_idx = np.array(range(2, num_x_square, 2))
-    corners1_y_idx = np.flip(np.array(range(1, num_y_square, 2)))
-    corners2_y_idx = np.flip(np.array(range(2, num_y_square, 2)))
 
     # corners
     corner1 = np.stack(np.meshgrid(corners1_x_idx, corners2_y_idx), axis=-1)
@@ -65,7 +40,7 @@ def even_rec_corners(num_x_square, num_y_square):
     corners_loc = np.concatenate([corner1, corner2, corner3, corner4], axis=1)  # [N, 4, 2]
     
     # get corners' aruco idx
-    corners_idx = corners_loc[:, :, 0] + (num_y_square - corners_loc[:, :, 1]) * (num_x_square + 1)
+    corners_idx = corners_loc[:, :, 0] + (num_y_square - corners_loc[:, :, 1] - 1) * (num_x_square)
 
     return corners_loc, corners_idx
 
@@ -76,6 +51,7 @@ def initialize(board_info):
     num_y_square = board_info.num_y_square
     length_square = board_info.length_square
     length_marker = board_info.length_marker
+    inner_offset = board_info.inner_offset
     res_x = int(board_info.res_x)
     res_y = int(board_info.res_y)
     offset = board_info.offset
@@ -94,7 +70,10 @@ def initialize(board_info):
     # basic information
     block_size_px = min(res_x // num_x_square, res_y // num_y_square)
     pad_x, pad_y = (res_x - block_size_px * num_x_square) // 2, (res_y - block_size_px * num_y_square) // 2
-
+    
+    # make inner area as black
+    iboard[pad_y + block_size_px * inner_offset - 1:res_y - block_size_px * inner_offset - pad_y, pad_x + block_size_px * inner_offset - 1:res_x - block_size_px * inner_offset - pad_x] = 0
+    
     # padding edges
     if offset >= 1:
         iboard = np.pad(iboard, ((offset, offset), (offset, offset)), 'constant', constant_values=255)
@@ -164,32 +143,11 @@ def draw_circles(iboard, offsets, board_info):
     num_x_square = board_info.num_x_square
     num_y_square = board_info.num_y_square
     length_square = board_info.length_square
+    inner_offset = board_info.inner_offset
     
-    # odd row corners
-    ocorners, ocorners_idx = odd_rec_corners(num_x_square, num_y_square)
-    
-    # even row corners
-    ecorners, ecorners_idx = even_rec_corners(num_x_square, num_y_square)
-
-    # all the corners of black rectangular : [Number of black rectangular, 4, 2]
-    Nrectangular = math.ceil(num_y_square / 2) * math.ceil(num_x_square / 2) + math.floor(num_y_square / 2) * math.floor(num_x_square / 2)
-    rec_corners = np.zeros((Nrectangular, 4, 2))  # [x, y]
-    rec_corners_idx = np.zeros((Nrectangular, 4))
-    
-    cnt_odd = 0
-    cnt_even = 0
-    for i in range(Nrectangular):
-
-        # odd rows
-        if i % num_x_square < math.ceil(num_x_square / 2):
-            rec_corners[i] = ocorners[cnt_odd]
-            rec_corners_idx[i] = ocorners_idx[cnt_odd]
-            cnt_odd += 1
-        # even rows
-        else:
-            rec_corners[i] = ecorners[cnt_even]
-            rec_corners_idx[i] = ecorners_idx[cnt_even]
-            cnt_even += 1
+    # corners of inner rectangular
+    rec_corners, rec_corners_idx = inner_rec_corners(num_x_square, num_y_square, inner_offset)
+    Nrectangular = len(rec_corners)
 
     # center of circles in black rectangular
     rec_corners_scale = rec_corners.copy()  # [N, 4, 2]
@@ -269,6 +227,7 @@ def create_full_board(board_info, size_square_mm, scale=1.0):
     board_info_['size_py'] = block_size_px
     board_info_['num_x'] = board_info.num_x_square
     board_info_['num_y'] = board_info.num_y_square
+    board_info_['inner_offset'] = board_info.inner_offset
     board_info_['rec2d_world'] = _2d_world
     board_info_['rec2d_template'] = _2d_template
     board_info_['rec3d_world'] = _3d_world
@@ -310,8 +269,9 @@ def main():
     parser.add_argument('--length_square', type=float, default=2.0, help='number of chessboard squares in Y direction')
     parser.add_argument('--length_marker', type=float, default=1.6, help='number of chessboard squares in Y direction')
     parser.add_argument('--resolution', type=int, default=3072, help='base resolution')  # 768
-    parser.add_argument('--radius', type=float, default=0.16, help='radius of circle')
+    parser.add_argument('--radius', type=float, default=0.15, help='radius of circle')
     parser.add_argument('--offset', type=int, default=8, help='padding number')
+    parser.add_argument('--inner_offset', type=int, default=1, help='padding number')
     parser.add_argument('--shift', type=int, default=16, help='for subpixel accuracy circle drawing')
     parser.add_argument('--aruco_type', type=str, default='DICT_4X4_50', help='aruco marker')
     parser.add_argument('--boardname', type=str, required=True, help='board name')
