@@ -347,7 +347,7 @@ def main():
 
     # draw board
     cv2.imwrite(str(path / 'board.png'), fboard)
-    np.save(str(path / 'board_info.npy'), info)
+    np.save(str(path / 'board_info.npy'), saved_info)
 
 if __name__ == '__main__':
     main()
