@@ -50,7 +50,7 @@ class CameraObject(object):
         
         # step5: save calibration results
         self.calib_data['camera'] = calib_results
-        pickle.dump(calib_results, open(Path(self.opts.paths.output_dir) / f'training_data_{self.tag}.pkl', 'wb'))
+        pickle.dump(calib_results, open(Path(self.opts.paths.output_dir) / f'calib_data.pkl', 'wb'))
     
     # prepare data from observations for PSF calibration
     def preparePatches(self, board, observations: dict):
@@ -68,7 +68,7 @@ class CameraObject(object):
         
         # save training data
         self.calib_data['training_data'] = training_data
-        pickle.dump(training_data, open(Path(self.opts.paths.output_dir) / f'calib_data.pkl', 'wb'))
+        pickle.dump(training_data, open(Path(self.opts.paths.output_dir) / f'training_data_{self.tag}.pkl', 'wb'))
     
     # get meta data from observations
     def estimateMetadata(self, board, training_data: dict):
