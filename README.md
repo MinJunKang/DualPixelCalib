@@ -35,4 +35,4 @@ sh ./scripts/intrinsic_calib_1.5.sh
 sh ./scripts/psf_calib_1.5.sh
 ```
 
-## See log directory to find results
+## 4. See log directory to find results
