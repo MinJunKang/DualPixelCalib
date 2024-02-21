@@ -7,7 +7,8 @@ git clone https://github.com/MinJunKang/DualPixelCalib.git -b minjun
 pip install -r requirements.txt
 ```
 
-## 2. Captured Dataset (Set path of CALIB_FOLDER and PSF_FOLDER at configs/paths/default.yaml)
+## 2. Captured Dataset
+### Set path of CALIB_FOLDER and PSF_FOLDER at configs/paths/default.yaml
 ```
 - CALIB_FOLDER
     - F06_av16
