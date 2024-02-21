@@ -1,0 +1,12 @@
+defaults:
+  - _self_
+  - calib: calib_240219_F15
+  - logger: wandb
+  - paths: default
+  - hydra: default
+
+exp_name: 240219_calib_F15
+task_name: intcalib
+
+seed: 42
+resume: false

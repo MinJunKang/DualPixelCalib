@@ -1,0 +1,8 @@
+
+__pycache__/
+env/
+.vscode/
+logs
+*.so
+*.obj
+*.ply
