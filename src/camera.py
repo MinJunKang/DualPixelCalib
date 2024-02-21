@@ -66,7 +66,7 @@ class CameraObject(object):
         # step3: extract meta data from patches
         training_data.update(self.estimateMetadata(board, training_data))
         
-        # save training data
+        # step4: save training data
         self.calib_data['training_data'] = training_data
         pickle.dump(training_data, open(Path(self.opts.paths.output_dir) / f'training_data_{self.tag}.pkl', 'wb'))
     
