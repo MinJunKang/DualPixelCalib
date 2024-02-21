@@ -129,7 +129,7 @@ class CalibBoard(object):
         
         return calib_results, per_scene_results
     
-    def propagateCorners(self, observations: dict, calib_results: dict, per_scene_results: dict, px_threshold=2.0):
+    def propagateCorners(self, observations: dict, calib_results: dict, per_scene_results: dict, px_threshold=1.6):
         
         world_pts = np.reshape(self.calib_board['rec3d_corners'], [-1, 3])
         world_pts_idx = np.array(range(len(world_pts)))

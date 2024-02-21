@@ -17,10 +17,6 @@ class CameraObject(object):
         
         # camera parameters
         self.calib_data = self.loadCalibdata(load_path)
-        
-    # save calibration data with learned PSF model (optional)
-    def saveCalibdata(self, model_path):
-        pickle.dump(self.calib_data, open(Path(model_path) / 'calib_data.pkl', 'wb'))
     
     # load calibration data with learned PSF model (optional)
     def loadCalibdata(self, model_path=None):
@@ -29,7 +25,7 @@ class CameraObject(object):
             model_path = Path(model_path).parent
             if (model_path / 'intcalib').is_dir():
                 if (model_path / 'intcalib' / 'calib_data.pkl').is_file():
-                    calib_data.update(pickle.load(open(model_path / 'intcalib' / 'calib_data.pkl', 'rb')))
+                    calib_data.update({'camera': pickle.load(open(model_path / 'intcalib' / 'calib_data.pkl', 'rb'))})
             if (model_path / 'psfcalib').is_dir():
                 if (model_path / 'psfcalib' / f'training_data_{self.tag}.pkl').is_file():
                     calib_data.update({'training_data': pickle.load(open(model_path / 'psfcalib' / f'training_data_{self.tag}.pkl', 'rb'))})
@@ -54,6 +50,7 @@ class CameraObject(object):
         
         # step5: save calibration results
         self.calib_data['camera'] = calib_results
+        pickle.dump(calib_results, open(Path(self.opts.paths.output_dir) / f'training_data_{self.tag}.pkl', 'wb'))
     
     # prepare data from observations for PSF calibration
     def preparePatches(self, board, observations: dict):
@@ -71,7 +68,7 @@ class CameraObject(object):
         
         # save training data
         self.calib_data['training_data'] = training_data
-        pickle.dump(training_data, open(Path(self.opts.paths.output_dir) / f'training_data_{self.tag}.pkl', 'wb'))
+        pickle.dump(training_data, open(Path(self.opts.paths.output_dir) / f'calib_data.pkl', 'wb'))
     
     # get meta data from observations
     def estimateMetadata(self, board, training_data: dict):
