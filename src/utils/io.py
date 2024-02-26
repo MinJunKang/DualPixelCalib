@@ -20,7 +20,10 @@ def read_img(path, scale=1.0):
         
     if scale < 1.0:
         img = cv2.resize(img, dsize=(0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        
+    
+    if img is None:
+        print("None type at", path)
+
     return img
 
 
@@ -47,7 +50,7 @@ def read_observations(dirpath, data_type='calib', scale=0.5):
     if data_type == 'calib':
         observations['format'] = 'calib'
         dirpath = Path(dirpath)
-        files = sorted([path for path in dirpath.glob('*') if path.suffixes[0] in ['.png', '.jpg', '.jpeg', '.JPEG', '.TIF', '.pgm']])
+        files = sorted([path for path in dirpath.glob('*.TIF')]) # if path.suffixes[0] in ['.png', '.jpg', '.jpeg', '.JPEG', '.TIF', '.pgm']])
         assert len(files) > 0, 'Wrong format of data'
         observations['images'] = [read_img(path, scale) for path in files]
         observations['image_size'] = observations['images'][0].shape[:2]

@@ -134,7 +134,7 @@ class CalibBoard(object):
         world_pts = np.reshape(self.calib_board['rec3d_corners'], [-1, 3])
         world_pts_idx = np.array(range(len(world_pts)))
         for (tvec, rvec, idx, ret) in zip(per_scene_results['tvecs'], per_scene_results['rvecs'], per_scene_results['idx'], per_scene_results['ret']):
-            if per_scene_results['ret'][idx] < px_threshold:
+            if ret < px_threshold:
                 
                 # get propagated corners
                 new_corners, _ = cv2.projectPoints(world_pts, rvec, tvec, calib_results['mtx'], calib_results['dist'])
@@ -163,6 +163,7 @@ class CalibBoard(object):
             observations['samples'][idx]['extrinsics'] = {}
             target_idx = sample['focals'].index(16.0)
             image = img2gray(sample['images_l'][target_idx])
+            # image = sample['images_l'][target_idx]
             corners, marker_idx, rejected = arucodetector.detectMarkers(image)
             corners = np.squeeze(corners)
             marker_idx = np.squeeze(marker_idx)
@@ -209,6 +210,10 @@ class CalibBoard(object):
             aif_image = img2gray(sample['images_l'][sample['focals'].index(16.0)])
             image_l = img2gray(sample['images_l'][sample['focals'].index(target_focal)])
             image_r = img2gray(sample['images_r'][sample['focals'].index(target_focal)])
+            # aif_image = sample['images_l'][sample['focals'].index(16.0)]
+            # image_l = sample['images_l'][sample['focals'].index(target_focal)]
+            # image_r = sample['images_r'][sample['focals'].index(target_focal)]
+
             if sample['extrinsics']['usage']:
                 for idx, psfboard in enumerate(self.psf_board):
                     rvec, tvec = sample['extrinsics']['rvec'][idx], sample['extrinsics']['tvec'][idx]
@@ -243,14 +248,14 @@ class CalibBoard(object):
                         patches_r = geomath.subpixel_cropper_batch(np.float32(pimg_r), circenters_refined, patchsize, mode='bilinear')
                         patches_c = geomath.subpixel_cropper_batch(np.float32(aif_pimg), circenters_refined, patchsize, mode='bilinear')
                         coords_3d = geomath.get_3d_points(template_3d.reshape(-1, 3), rvec, tvec).reshape(h_t, w_t, 3)  # xyz
-                        patches_x = geomath.subpixel_cropper_batch(coords_3d[..., 0], circenters_refined, patchsize)
-                        patches_y = geomath.subpixel_cropper_batch(coords_3d[..., 1], circenters_refined, patchsize)
-                        patches_z = geomath.subpixel_cropper_batch(coords_3d[..., 2], circenters_refined, patchsize)
+                        patches_x = geomath.subpixel_cropper_batch(coords_3d[..., 0], circenters_refined, patchsize, coordinates=True)
+                        patches_y = geomath.subpixel_cropper_batch(coords_3d[..., 1], circenters_refined, patchsize, coordinates=True)
+                        patches_z = geomath.subpixel_cropper_batch(coords_3d[..., 2], circenters_refined, patchsize, coordinates=True)
                         patches_3d = np.stack([patches_x, patches_y, patches_z], axis=-1)
                         prj_uv, _ = cv2.projectPoints(template_3d.reshape(-1, 3), rvec, tvec, mtx, dist)  # uv coords
                         prj_uv = prj_uv.reshape([h_t, w_t, 2])
-                        patches_u = geomath.subpixel_cropper_batch(prj_uv[..., 0], circenters_refined, patchsize)
-                        patches_v = geomath.subpixel_cropper_batch(prj_uv[..., 1], circenters_refined, patchsize)
+                        patches_u = geomath.subpixel_cropper_batch(prj_uv[..., 0], circenters_refined, patchsize, coordinates=True)
+                        patches_v = geomath.subpixel_cropper_batch(prj_uv[..., 1], circenters_refined, patchsize, coordinates=True)
                         patches_uv = np.stack([patches_u, patches_v], axis=-1)
                         
                         # save data

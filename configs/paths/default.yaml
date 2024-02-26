@@ -4,8 +4,8 @@
 root_dir: ${oc.env:PROJECT_ROOT}
 
 # path to data directory (put here)
-calib_data_dir: "/workspace/dataset/camcalib/${calib.intboard.observation}"  # save observations related to intrinsic calibration
-psf_data_dir: "/workspace/dataset/psfcalib/${calib.psfboard.observation}"  # save observations related to PSF calibration
+calib_data_dir: "./data/DP_data/2024_dp_calib/cam_calib/${calib.intboard.observation}"  # save observations related to intrinsic calibration
+psf_data_dir: "./data/DP_data/2024_dp_calib/psf_calib/${calib.psfboard.observation}"  # save observations related to PSF calibration
 
 # path to board directory
 board_dir: ${paths.root_dir}/boards/

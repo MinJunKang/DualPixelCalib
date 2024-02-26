@@ -30,6 +30,7 @@ def main(cfg: DictConfig):
             
         # train PSF calibration model
         camera_obj.trainPSFCalibModel()
+        camera_obj.savePSFPatches(cfg)
 
 
 if __name__ == '__main__':

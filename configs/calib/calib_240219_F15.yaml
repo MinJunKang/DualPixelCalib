@@ -5,12 +5,12 @@ observation:
 
 intboard:
   board_name: calibboard
-  observation: F15_av16
+  observation: F1.5_av16
   board_size_mm: 40
 
 psfboard:
-  board_name: psfboard2
-  observation: F15
+  board_name: psfboard3
+  observation: F1.5_multi
   board_size_mm: 40
   target_focal: 2.8
   patch_size_area: 0.75

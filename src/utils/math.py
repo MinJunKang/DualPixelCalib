@@ -91,7 +91,7 @@ def subpixel_cropper(img, center, size_patch):
     return patch, startpoint
 
 
-def subpixel_cropper_batch(img, center, size_patch, mode='nearest', as_numpy=True):
+def subpixel_cropper_batch(img, center, size_patch, mode='nearest', as_numpy=True, coordinates=False):
     '''
         img : [H, W], numpy array
         center : [B, 2], numpy array
@@ -101,7 +101,14 @@ def subpixel_cropper_batch(img, center, size_patch, mode='nearest', as_numpy=Tru
     '''
     batch_num = len(center)
     center_x, center_y = center[:, 0], center[:, 1]
+    # if len(img.shape)==2 and not coordinates:
+    #     img = np.stack([img, img, img], 2)
+
+    # if coordinates:
     img_ = torch.from_numpy(img).view(1, 1, img.shape[0], img.shape[1])
+    # else:
+    #     img_ = torch.from_numpy(img).view(1, 3, img.shape[0], img.shape[1])
+
     
     # create src_box grid
     src_box_grid_x = np.stack([center_x - size_patch / 2, center_x + size_patch / 2, center_x + size_patch / 2, center_x - size_patch / 2], axis=-1)
@@ -115,6 +122,8 @@ def subpixel_cropper_batch(img, center, size_patch, mode='nearest', as_numpy=Tru
     
     # do crop
     cropped_imgs = crop_by_boxes(img_.repeat(batch_num, 1, 1, 1), src_box_grid, dst_box_grid, mode=mode).squeeze()
+    if len(cropped_imgs.shape)==4:
+        cropped_imgs = cropped_imgs.permute(0, 2, 3, 1) ##[B, H, W, C]
     if as_numpy:
         return cropped_imgs.numpy()
     else:
