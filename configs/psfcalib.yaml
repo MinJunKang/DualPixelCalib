@@ -1,0 +1,18 @@
+defaults:
+  - _self_
+  - calib: calib_240219_F15
+  - logger: wandb
+  - paths: default
+  - hydra: default
+  - model: psfvoxel
+  - callbacks: default
+  - data: default
+  - trainer: gpu
+
+exp_name: 240219_calib_F15
+task_name: psfcalib
+
+# path to load checkpoint
+load_ckpt:
+
+seed: 42

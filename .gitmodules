@@ -1,0 +1,4 @@
+[submodule "src/extern/pacnet"]
+	path = src/extern/pacnet
+	url = https://github.com/MinJunKang/pacnet.git
+	branch = main

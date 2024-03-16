@@ -1,0 +1,59 @@
+numpy
+einops
+exifread
+opencv-contrib-python==4.5.5.64
+yacs
+scipy
+ninja
+tqdm
+wandb
+psutil
+matplotlib
+kornia
+pyrootutils
+packaging
+tifffile
+parmap
+scikit-spatial
+scikit-image
+cython
+lightning
+flax
+texttable
+plotly
+tensorboardX
+torch_optimizer
+scikit-learn
+ptflops
+easydict
+kaleido
+plotly
+dash
+texttable
+rootutils
+torchmetrics
+hydra-core
+hydra-colorlog
+hydra-optuna-sweeper
+denoising_diffusion_pytorch
+
+## Install requirements ##
+# pip install -r requirements.txt
+
+## Scatter build ## (should install pytorch scatter)
+# if torch version is 2.0.0
+# pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+${CUDA}.html
+
+## MATLAB build ##
+# which matlab -> ls -l matlab : /home/miruware/hdd1/minjun/Matlab/bin/matlab
+# cd [MATLAB Directory]\extern\engines\python
+# python setup.py install
+
+## Install TinyCudaNN ##
+# git clone --recursive https://github.com/nvlabs/tiny-cuda-nn
+# cd tiny-cuda-nn
+# cmake . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+# cmake --build build --config RelWithDebInfo -j
+# cd bindings/torch
+# python setup.py install
+# cd ../../../
