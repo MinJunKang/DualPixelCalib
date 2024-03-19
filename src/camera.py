@@ -314,11 +314,11 @@ class CameraObject(object):
 
             cost_per_level = torch.zeros(level,1)
             l = F.conv2d(torch.Tensor(img_l_patches[n])[None,...].permute(0, 3, 1, 2).float().cuda(), 
-                            psfk_left.permute(0, 3, 1, 2),
+                            psfk_right.permute(0, 3, 1, 2),
                             padding='same').squeeze()
 
             r = F.conv2d(torch.Tensor(img_r_patches[n])[None,...].permute(0, 3, 1, 2).float().cuda(), 
-                            psfk_right.permute(0, 3, 1, 2),
+                            psfk_left.permute(0, 3, 1, 2),
                             padding='same').squeeze()
                 # l[...,rgb] = convolve2d(img_l_patches[n][...,rgb], psfk_left[n_level,...,rgb], mode='same')
                 # r[...,rgb] = convolve2d(img_r_patches[n][...,rgb], psfk_right[n_level,...,rgb], mode='same')
