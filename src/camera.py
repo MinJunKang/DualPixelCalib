@@ -4,12 +4,13 @@ import cv2
 import torch
 import pickle
 import hydra
+import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from einops import repeat, rearrange
 from denoising_diffusion_pytorch import Unet, GaussianDiffusion
 import lightning as L
-from src.utils.visualizer import visualize_PSFVolume
+from src.utils.visualizer import visualize_PSFVolume, save_as_gif
 from src.model.utils.common import masked_mean, masked_minmax
 from src.utils.instantiators import instantiate_callbacks, instantiate_loggers
 
@@ -137,7 +138,7 @@ class CameraObject(object):
             import importlib
             module_path, class_name = self.opts.model._target_.rsplit('.', 1)
             module = importlib.import_module(module_path)
-            model = getattr(module, class_name).load_from_checkpoint(str(final_ckpt_path))
+            model = getattr(module, class_name).load_from_checkpoint(str(final_ckpt_path), strict=False)
         else:
             model = hydra.utils.instantiate(self.opts.model, 
                                             meta_data=datamodule.meta_data, 
@@ -148,7 +149,8 @@ class CameraObject(object):
             trainer = hydra.utils.instantiate(self.opts.trainer, callbacks=callbacks, logger=logger)
             trainer.fit(model=model, datamodule=datamodule, ckpt_path=self.opts.get("load_ckpt"))
             
-        # save PSF volume
+        # save PSF volume related results
+        self.savePSFImage(model)
         self.savePSFVolume(model)
     
     def trainDiffusionModel(self):
@@ -179,13 +181,68 @@ class CameraObject(object):
         torch.save(data, str(self.diffusion_ckpt_path))
         
         self.diffusion.model.training = False
+        
+    @torch.no_grad()
+    def savePSFImage(self, psf_model, level=64, splits=[8, 10], pad=60):
+        psf_model.eval()
+        
+        h_img, w_img = self.calib_data['camera']['image_size']
+        patch_size = psf_model.hparams.model_cfg.psf_volume.patch_uvsize
+        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
+        depths = torch.linspace(min_depth, max_depth, level).cuda()
+        umtx = torch.from_numpy(np.float32(self.calib_data['camera']['umtx'])).cuda()
+        
+        result_img_left = []
+        result_img_right = []
+        uv_coords = torch.stack(torch.meshgrid(torch.arange(patch_size), torch.arange(patch_size), indexing='xy'), dim=-1).cuda()
+        for n_level in range(level):
+            result_psf_rowsl, result_psf_rowsr = [], []
+            for n in range(splits[0]):
+                result_psf_colsl, result_psf_colsr = [], []
+                for m in range(splits[1]):
+                    u_coord = uv_coords[..., 0] + (w_img / splits[1] * (m + 1))
+                    v_coord = uv_coords[..., 1] + (h_img / splits[0] * (n + 1))
+                    uv_coord_patch = torch.stack([u_coord, v_coord], dim=-1)
+                    
+                    # uv coord normalization
+                    uv_coord_patch[..., 0] = (uv_coord_patch[..., 0] - umtx[0, 2]) / umtx[0, 0]
+                    uv_coord_patch[..., 1] = (uv_coord_patch[..., 1] - umtx[1, 2]) / umtx[1, 1]
+                    
+                    # xyz coord
+                    xyz_coord_patch = torch.ones((patch_size, patch_size, 3), dtype=torch.float32).cuda()
+                    xyz_coord_patch[..., 0] = u_coord
+                    xyz_coord_patch[..., 1] = v_coord
+                    xyz_coord_patch = torch.einsum('ij,klj->kli', torch.inverse(umtx), xyz_coord_patch) * depths[n_level]
+                    xyz_coord_patch[..., :2] = xyz_coord_patch[..., :2] - xyz_coord_patch[patch_size // 2:patch_size // 2 + 1, patch_size // 2:patch_size // 2 + 1, :2]
+                    
+                    # get psf volume
+                    feat = psf_model.blur_volume['featnet'].cuda()(xyz_coord_patch.reshape(-1, 3))
+                    coords = torch.cat([uv_coord_patch.reshape(-1, 2), xyz_coord_patch.reshape(-1, 3)], dim=1)
+                    if 'embedder' in psf_model.blur_volume:
+                        coords = psf_model.blur_volume['embedder'].cuda()(coords)
+                    kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
+                    kernel_w = kernel_w.reshape(patch_size, patch_size, -1)
+                    psfk_left, psfk_right = kernel_w[..., :3].cpu().numpy(), kernel_w[..., 3:].cpu().numpy()
+                    result_psf_colsl.append((psfk_left - psfk_left.min()) / (psfk_left.max() - psfk_left.min()) * 255)
+                    result_psf_colsr.append((psfk_right - psfk_right.min()) / (psfk_right.max() - psfk_right.min()) * 255)
+                    
+                result_psf_rowsl.append(np.hstack(result_psf_colsl))
+                result_psf_rowsr.append(np.hstack(result_psf_colsr))
+            result_psf_rowsl = np.vstack(result_psf_rowsl)
+            result_psf_rowsr = np.vstack(result_psf_rowsr)
+            result_img_left.append(result_psf_rowsl.astype('uint8'))
+            result_img_right.append(result_psf_rowsr.astype('uint8'))
+            
+        # make gif video
+        save_as_gif(result_img_left, Path(self.opts.paths.output_dir) / f'psfvolume_left.gif', duration=250)
+        save_as_gif(result_img_right, Path(self.opts.paths.output_dir) / f'psfvolume_right.gif', duration=250)
     
     @torch.no_grad()
-    def savePSFVolume(self, psf_model, level=32, pad=4):
+    def savePSFVolume(self, psf_model, level=32, pad=60):
         psf_model.eval()
         
         patch_size = psf_model.hparams.model_cfg.psf_volume.patch_uvsize
-        min_depth, max_depth = psf_model.min_depth.item() + 20, psf_model.max_depth.item() - 20
+        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
         depths = torch.linspace(min_depth, max_depth, level).cuda()
         
         # create uv coords
@@ -213,9 +270,6 @@ class CameraObject(object):
         visualize_PSFVolume(psfV_right[..., 0].cpu().numpy(), min_depth, max_depth, Path(self.opts.paths.output_dir), 'right_r')
         visualize_PSFVolume(psfV_right[..., 1].cpu().numpy(), min_depth, max_depth, Path(self.opts.paths.output_dir), 'right_g')
         visualize_PSFVolume(psfV_right[..., 2].cpu().numpy(), min_depth, max_depth, Path(self.opts.paths.output_dir), 'right_b')
-        
-        # save raw file
-        import pdb; pdb.set_trace()
     
     
     

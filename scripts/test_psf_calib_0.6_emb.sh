@@ -1,0 +1,2 @@
+
+python train_psf_calib.py calib=calib_240219_F06 model=psfvoxel exp_name=240219_calib_F06_emb callbacks.model_checkpoint.dirname=checkpoints_notv

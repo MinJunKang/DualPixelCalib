@@ -5,7 +5,8 @@ defaults:
   - _self_
 
 model_checkpoint:
-  dirpath: ${paths.output_dir}/checkpoints
+  dirname: "checkpoints"
+  dirpath: ${paths.output_dir}/${callbacks.model_checkpoint.dirname}
   filename: "epoch_{epoch:03d}"
   save_last: True
   auto_insert_metric_name: False

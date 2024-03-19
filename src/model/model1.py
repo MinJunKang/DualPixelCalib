@@ -29,6 +29,7 @@ class PSFVolumeModule(LightningModule):
     ) -> None:
         super().__init__()
         
+        if not 'w_diffusion' in model_cfg or diffusion_model is None: model_cfg.w_diffusion = False
         self.save_hyperparameters(logger=False, ignore='diffusion_model')
         
         # define volume boundary condition

@@ -6,7 +6,7 @@ model_cfg:
   level: 16
   use_deblur_volume: false
   normalize_input: true
-  w_diffusion: false
+  w_diffusion: true
 
   psf_volume:
     patch_uvsize: 59  # this is crucial for learning the PSF, Make sure kernel is big enough.

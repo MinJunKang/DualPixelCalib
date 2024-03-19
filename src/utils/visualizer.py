@@ -3,6 +3,7 @@ import cv2
 import copy, time
 import torch
 import numpy as np
+from PIL import Image
 import torchvision
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -74,6 +75,11 @@ def get_heatmap(gray,cmap): # [N,H,W]
     color = plt.get_cmap(cmap)(gray.numpy())
     color = torch.from_numpy(color[...,:3]).permute(0,3,1,2).float() # [N,3,H,W]
     return color
+
+
+def save_as_gif(images, out_path, duration=100):
+    img, *imgs = [Image.fromarray(img).convert('RGBA') for img in images]
+    img.save(fp=str(out_path), format='GIF', append_images=imgs, save_all=True, duration=duration, loop=0)
 
 
 def visualize_PSFVolume(psf_volume, mindepth, maxdepth, storepath, tag, opacity=0.1):
