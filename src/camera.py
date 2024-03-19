@@ -13,6 +13,9 @@ import lightning as L
 from src.utils.visualizer import visualize_PSFVolume, save_as_gif
 from src.model.utils.common import masked_mean, masked_minmax
 from src.utils.instantiators import instantiate_callbacks, instantiate_loggers
+# from scipy.signal import convolve2d
+import torch.nn.functional as F
+from torchvision.utils import save_image
 
 
 # class to store camera related parameters
@@ -122,7 +125,7 @@ class CameraObject(object):
                 self.trainDiffusionModel()
             else:
                 checkpoint = torch.load(str(self.diffusion_ckpt_path))
-                self.diffusion.load_state_dict(checkpoint['model'], strict=True)
+                self.diffusion.load_state_dict(checkpoint['model'], strict=False)
         
         # learn psf model
         datamodule = hydra.utils.instantiate(self.opts.get("data"), 
@@ -150,8 +153,9 @@ class CameraObject(object):
             trainer.fit(model=model, datamodule=datamodule, ckpt_path=self.opts.get("load_ckpt"))
             
         # save PSF volume related results
-        self.savePSFImage(model)
-        self.savePSFVolume(model)
+        self.model = model
+        # self.savePSFImage(model)
+        # self.savePSFVolume(model)
     
     def trainDiffusionModel(self):
         
@@ -181,7 +185,7 @@ class CameraObject(object):
         torch.save(data, str(self.diffusion_ckpt_path))
         
         self.diffusion.model.training = False
-        
+
     @torch.no_grad()
     def savePSFImage(self, psf_model, level=64, splits=[8, 10], pad=60):
         psf_model.eval()
@@ -236,6 +240,105 @@ class CameraObject(object):
         # make gif video
         save_as_gif(result_img_left, Path(self.opts.paths.output_dir) / f'psfvolume_left.gif', duration=250)
         save_as_gif(result_img_right, Path(self.opts.paths.output_dir) / f'psfvolume_right.gif', duration=250)
+
+
+    # def myfun(xe, patlg, patrg, kersize, border):
+        
+    #     # only flipped kernel symmetry cost
+    #     l = convolve2d(patlg, np.fliplr(h), mode='same')
+    #     r = convolve2d(patrg, h, mode='same')
+    #     l = l[border:-border, border:-border]
+    #     r = r[border:-border, border:-border]
+    #     err = (l - r) / 255
+    #     xerr = np.sum(err**2) / np.size(err)
+    #     return xerr
+    
+    @torch.no_grad()
+    def estimateDepthFromPSF(self, imglg, imgrg, imgcg, level=255, splits=[8, 10], pad=60):
+        
+        psf_model = self.model
+        psf_model.eval()
+        h_img, w_img = imglg.shape[:2]
+        img_patch_size = 111
+        kernel_size = 41
+        stride = 33
+        border = 25
+        # h_img, w_img = self.calib_data['camera']['image_size']
+        umtx = torch.from_numpy(np.float32(self.calib_data['camera']['umtx'])).cuda()
+
+        img_l_patches = [imglg[y:y+img_patch_size,x:x+img_patch_size] 
+                         for y in range(0,imglg.shape[0]-img_patch_size,stride) for x in range(0,imglg.shape[1]-img_patch_size,stride)]
+        img_r_patches = [imgrg[y:y+img_patch_size,x:x+img_patch_size] 
+                         for y in range(0,imgrg.shape[0]-img_patch_size,stride) for x in range(0,imgrg.shape[1]-img_patch_size,stride)]
+        uv_coords = [torch.stack(torch.meshgrid(torch.arange(y, y+img_patch_size), torch.arange(x, x+img_patch_size)), dim=-1).cuda()
+                     for y in range(0,imglg.shape[0]-img_patch_size,stride) for x in range(0,imglg.shape[1]-img_patch_size,stride)]
+        
+        uv_coords = torch.stack(uv_coords)
+
+        uv_coords_norm = uv_coords.clone().cuda().to(torch.float32)
+        uv_coords_norm[..., 0] = (uv_coords_norm[..., 0] - umtx[0, 2]) / umtx[0, 0]
+        uv_coords_norm[..., 1] = (uv_coords_norm[..., 1] - umtx[1, 2]) / umtx[1, 1]
+
+
+        calib_patch_size = self.model.hparams.model_cfg.psf_volume.patch_uvsize
+        patch_size = img_patch_size
+        min_depth, max_depth = self.model.min_depth.item() + pad, self.model.max_depth.item() - pad
+        depths = torch.linspace(min_depth, max_depth, level).cuda()
+        
+
+        depth_level = torch.zeros([h_img, w_img], dtype=torch.long)
+        depth_cost = torch.zeros([h_img, w_img])
+
+        for n in tqdm(range(uv_coords_norm.shape[0])):
+            
+            xyz_coord_patch = torch.ones(( patch_size, patch_size, 3), dtype=torch.float32).cuda()
+            xyz_coord_patch[..., 0] = uv_coords_norm[n, ...,0]
+            xyz_coord_patch[..., 1] = uv_coords_norm[n, ...,1]
+            xyz_coord_patch = torch.einsum('ij,klj->kli', torch.inverse(umtx), xyz_coord_patch)
+            xyz_coord_patch = torch.einsum('ijk,d->dijk', xyz_coord_patch, depths)
+            xyz_coord_patch[..., :2] = xyz_coord_patch[..., :2] - xyz_coord_patch[:,patch_size // 2:patch_size // 2 + 1, patch_size // 2:patch_size // 2 + 1, :2]
+
+            # get psf volume
+            feat = self.model.blur_volume['featnet'].cuda()(xyz_coord_patch.reshape(-1, 3))
+            coords = torch.cat([uv_coords_norm[n].unsqueeze(0).repeat(255,1,1,1).reshape(-1, 2), xyz_coord_patch.reshape(-1, 3)], dim=1)
+            if 'embedder' in self.model.blur_volume:
+                coords = self.model.blur_volume['embedder'].cuda()(coords)
+            kernel_w = self.model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
+            kernel_w = kernel_w.reshape(level, patch_size, patch_size, -1)
+            # psfk_left, psfk_right = kernel_w[..., :3].cpu().numpy(), kernel_w[..., 3:].cpu().numpy()
+            psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
+            # torch conv2d is actually cross-correlation, need to flip kernel to correctly perform conv
+            psfk_left = torch.flip(psfk_left, [1, 2])
+            psfk_right = torch.flip(psfk_right, [1, 2])
+
+
+            cost_per_level = torch.zeros(level,1)
+            l = F.conv2d(torch.Tensor(img_l_patches[n])[None,...].permute(0, 3, 1, 2).float().cuda(), 
+                            psfk_left.permute(0, 3, 1, 2),
+                            padding='same').squeeze()
+
+            r = F.conv2d(torch.Tensor(img_r_patches[n])[None,...].permute(0, 3, 1, 2).float().cuda(), 
+                            psfk_right.permute(0, 3, 1, 2),
+                            padding='same').squeeze()
+                # l[...,rgb] = convolve2d(img_l_patches[n][...,rgb], psfk_left[n_level,...,rgb], mode='same')
+                # r[...,rgb] = convolve2d(img_r_patches[n][...,rgb], psfk_right[n_level,...,rgb], mode='same')
+            l = l[:,border:-border, border:-border]
+            r = r[:,border:-border, border:-border]
+            err = (l - r) / 255
+            xerr = torch.sum(err**2,dim=(1,2)) / torch.numel(err[0])
+            cost_per_level[:,0] = xerr
+            fill_coords = uv_coords[n,
+                                    patch_size//2 - stride//2:patch_size//2+stride//2 + 1, 
+                                    patch_size//2 - stride//2:patch_size//2+stride//2 + 1].reshape(-1, 2).permute(1,0).cpu()
+            fval, min_level = torch.min(cost_per_level,0)
+            depth_cost[fill_coords[0,:],fill_coords[1,:]] = fval
+            depth_level[fill_coords[0,:],fill_coords[1,:]] = min_level
+
+        print('done')    
+        # make gif video
+        save_image(depth_cost/depth_cost.max(), 'output_cost.png')
+        save_image(depth_level/255, 'output_depth.png')
+        
     
     @torch.no_grad()
     def savePSFVolume(self, psf_model, level=32, pad=60):
