@@ -201,6 +201,12 @@ class PSFVolumeModule(LightningModule):
             # loss.update({f'loss_tv_{n}_b': loss_tv_left + loss_tv_right + loss_tv_left_img + loss_tv_right_img})
             loss.update({f'loss_tv_{n}_b': loss_tv_left_img + loss_tv_right_img})
             # loss.update({f'loss_tv_{n}_b': loss_tv_left + loss_tv_right})
+            
+            # following the ICCP20 paper
+            if self.hparams.model_cfg.use_symmetric_loss:
+                convolved1 = conv2d(blur_left_img, kernel_right, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, dilation=1)
+                convolved2 = conv2d(blur_right_img, kernel_left, kernel_size=kernel_size, stride=1, padding=kernel_size // 2, dilation=1)
+                loss.update({f'loss_symmetric_{n}_b': charbonnier_loss(convolved1, convolved2, reduction='mean')})
             output.update({f'left_{n}': reblurred_left, f'right_{n}': reblurred_right, f'left_gt_{n}': blur_left_img, f'right_gt_{n}': blur_right_img, f'clean_{n}': clean_img})
             
             if self.hparams.model_cfg.use_deblur_volume:

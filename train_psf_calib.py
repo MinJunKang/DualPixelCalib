@@ -29,7 +29,13 @@ def main(cfg: DictConfig):
             camera_obj.preparePatches(calib_board, observations)
             
         # train PSF calibration model
-        camera_obj.trainPSFCalibModel()
+        model = camera_obj.trainPSFCalibModel()
+        
+        import cv2
+        imglg = cv2.imread("/workspace/dataset/ICCP2020_DP_dataset_processed/LEFT/010.jpg")
+        imgrg = cv2.imread("/workspace/dataset/ICCP2020_DP_dataset_processed/RIGHT/010.jpg")
+        imgcg = cv2.imread("/workspace/dataset/ICCP2020_DP_dataset_processed/LRSUM/010.jpg")
+        camera_obj.estimateDepthFromPSF(model, imglg, imgrg, imgcg, level=32, pad=60)
 
 
 if __name__ == '__main__':
