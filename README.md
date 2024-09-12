@@ -30,9 +30,13 @@ pip install -r requirements.txt
 ```
 
 ## 3. run Calibration
+### **Run Intrinsic Calibration**
 ```
-sh ./scripts/intrinsic_calib_1.5.sh
-sh ./scripts/psf_calib_1.5.sh
+sh ./scripts/intrinsic_calib_240219_F06.sh
+```
+### **Run DP-PSF Calibration**
+```
+sh ./scripts/psf_calib_F06_A28_base.sh
 ```
 
 ## 4. See log directory to find results
