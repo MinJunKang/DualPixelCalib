@@ -14,24 +14,24 @@ class HashPSFGrid(nn.Module):
                  bound_xy: float = 10.0,
                  min_depth: float = 0.1,
                  max_depth: float = 1.0,
-                 num_levels: int = 16,
+                 num_level: int = 16,
                  min_res: int = 16, 
                  max_res: int = 1024,
                  log2_hashmap_size: int = 19,
                  features_per_level: int = 2) -> None:
         super().__init__()
         self.in_dim = in_dim
-        self.out_dim = int(features_per_level * num_levels)
+        self.out_dim = int(features_per_level * num_level)
         self.type = 'hash'
         
         # Hash Initialization
-        growth_factor = np.exp((np.log(max_res) - np.log(min_res)) / (num_levels - 1))
+        growth_factor = np.exp((np.log(max_res) - np.log(min_res)) / (num_level - 1))
         
         self.encoder = tcnn.Encoding(
             n_input_dims=self.in_dim,
             encoding_config={
                 "otype": "HashGrid",
-                "n_levels": num_levels,
+                "n_levels": num_level,
                 "n_features_per_level": features_per_level,
                 "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": min_res,

@@ -1,10 +1,11 @@
 
+import os
 import hydra
 import pyrootutils
 from omegaconf import DictConfig
 from src.calib import CalibBoard
 from src.camera import CameraObject
-from src.utils.io import read_observations
+from src.utils.io import read_observations, read_lidar_observations
 
 root = pyrootutils.setup_root(__file__, dotenv=True, pythonpath=True) 
 
@@ -12,18 +13,24 @@ root = pyrootutils.setup_root(__file__, dotenv=True, pythonpath=True)
 def main(cfg: DictConfig):
     
     # define camera object
-    camera_obj = CameraObject(cfg, load_path=cfg.paths.output_dir)
+    camera_obj = CameraObject(cfg)
+        
+    # define calibration board
+    calib_board = CalibBoard(cfg)
     
-    if not 'camera' in camera_obj.calib_data:
-        
-        # define calibration board
-        calib_board = CalibBoard(cfg)
-        
-        # read observations
-        observations = read_observations(cfg.paths.calib_data_dir, 'calib', cfg.calib.observation.scale)
-        
-        # run intrinsic calibration
-        camera_obj.runIntrinsicCalib(calib_board, observations)
+    # read observations
+    observations = read_observations(os.path.join(cfg.paths.calib_data_dir, cfg.calib.intboard.path_rgb), 
+                                        'calib', cfg.calib.observation.scale)
+    if cfg.calib.intboard.path_lidar is not None:
+        observations_lidar = read_lidar_observations(os.path.join(cfg.paths.calib_data_dir, cfg.calib.intboard.path_lidar), 'calib')
+    else:
+        observations_lidar = None
+    
+    # run intrinsic / extrinsic calibration
+    camera_obj.runIntrinsicCalib(calib_board, observations)
+    if observations_lidar is not None:
+        camera_obj.runIntrinsicCalib(calib_board, observations_lidar, window_size=9)
+        camera_obj.runExtrinsicCalib(calib_board, observations, observations_lidar)
 
 
 if __name__ == '__main__':

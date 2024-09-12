@@ -1,2 +1,0 @@
-
-python train_psf_calib.py model=psfvoxel_emb_small exp_name=240219_calib_F15_emb

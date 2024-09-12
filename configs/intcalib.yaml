@@ -5,8 +5,8 @@ defaults:
   - paths: default
   - hydra: default
 
-exp_name: 240219_calib_F15
-task_name: intcalib
+exp_name: ${calib.intboard.exp_name}
+task_name: ${calib.intboard.task_name}
 
 seed: 42
 resume: false

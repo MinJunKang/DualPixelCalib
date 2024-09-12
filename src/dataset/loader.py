@@ -16,36 +16,23 @@ class DPCalloader(Dataset):
         
         self.precision = precision
         self.transform = transform
+        self.output_type = np.float16 if self.precision in ['16', '16-mixed'] else np.float32   # precision
         
-        if model_cfg.multires:
-            self.num_level = len(data['training_data']['clean_patch'])
-            self.clean_patches = data['training_data']['clean_patch']
-            self.left_patches = data['training_data']['lpatch']
-            self.right_patches = data['training_data']['rpatch']
-            self.aif_patches = data['training_data']['noisy_patch']
-            self.points_patches = data['training_data']['patch_3d']
-            self.uv_patches = data['training_data']['patch_uv']
-            self.rvec = data['training_data']['rvec']
-            self.tvec = data['training_data']['tvec']
-            
-        else:
-            self.num_level = 1
-            self.clean_patches = data['training_data']['clean_patch'][0][None]
-            self.left_patches = data['training_data']['lpatch'][0][None]
-            self.right_patches = data['training_data']['rpatch'][0][None]
-            self.aif_patches = data['training_data']['noisy_patch'][0][None]
-            self.points_patches = data['training_data']['patch_3d'][0][None]
-            self.uv_patches = data['training_data']['patch_uv'][0][None]
-            self.rvec = data['training_data']['rvec'][0][None]
-            self.tvec = data['training_data']['tvec'][0][None]
-            
+        self.clean_patches = data['training_data']['clean_patch']
+        self.left_patches = data['training_data']['lpatch']
+        self.right_patches = data['training_data']['rpatch']
+        self.aif_patches = data['training_data']['noisy_patch']
+        self.points_patches = data['training_data']['patch_3d']
+        self.uv_patches = data['training_data']['patch_uv']
+        self.rvec = data['training_data']['rvec']
+        self.tvec = data['training_data']['tvec']
         self.image_size = data['camera']['image_size']
         
         # Since the depth label of PSF is imbalanced, adapt "Delving into Deep Imbalanced Regression (ICML'21)" to regress imbalance
         # For LDS method, compute effective label density and re-weight
         if LDS_cfg.use_LDS:
             self.LDS_ratio = (model_cfg.level / LDS_cfg.LDS_step)
-            self.weights_LDS, self.min_depth, self.max_depth = self.calc_reweight_LDS(data['training_data']['patch_3d'][0], model_cfg.level, LDS_cfg.LDS_step, LDS_cfg.LDS_sigma, LDS_cfg.LDS_ks)
+            self.weights_LDS, self.min_depth, self.max_depth = self.calc_reweight_LDS(data['training_data']['patch_3d'], model_cfg.level, LDS_cfg.LDS_step, LDS_cfg.LDS_sigma, LDS_cfg.LDS_ks)
         else:
             self.LDS_ratio = None
             self.weights_LDS, self.min_depth, self.max_depth = None, data['training_data']['depth_min'], data['training_data']['depth_max']
@@ -67,53 +54,48 @@ class DPCalloader(Dataset):
         return weights, depth_all.min(), depth_all.max()
         
     def __getitem__(self, index):
-        
         sample_out = dict()
-        type_det = np.float16 if self.precision in ['16', '16-mixed'] else np.float32   # precision
-        for i in range(self.num_level):
-            sample_out.update({f'clean_{i}': [], f'aif_{i}': [], f'left_{i}': [], f'right_{i}': [],
-                               f'weight_{i}': [], f'uv_coord_{i}': [], f'3d_coord_{i}': [], f'mask_{i}': []})
-            
-            # preprocess data
-            cleans = self.transform(type_det(self.clean_patches[i][index] / 255.0))
-            lefts = self.transform(type_det(self.left_patches[i][index] / 255.0))
-            rights = self.transform(type_det(self.right_patches[i][index] / 255.0))
-            aifs = self.transform(type_det(self.aif_patches[i][index] / 255.0))
-            uvs = self.transform(type_det(self.uv_patches[i][index]))
-            points = self.transform(type_det(self.points_patches[i][index]))
-            
-            mask_uv_start = (self.uv_patches[i][index, ..., 0] >= 0) & (self.uv_patches[i][index, ..., 1] >= 0)
-            mask_uv_end = (self.uv_patches[i][index, ..., 0] <= self.image_size[1] - 1) & (self.uv_patches[i][index, ..., 1] <= self.image_size[0] - 1)
-            mask = (self.points_patches[i][index, ..., -1] > 0) & mask_uv_start & mask_uv_end
-            mask = self.transform(type_det(mask))
-            
-            # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
-            depths = self.points_patches[i][index, ..., -1]
-            if self.weights_LDS is not None:
-                ind = (depths - self.min_depth) / (self.max_depth - self.min_depth) * (int(self.LDS_ratio) - 1)
-                ind_0 = np.int64(ind)
-                ind_1 = np.clip(ind_0 + 1, 0, int(self.LDS_ratio) - 1)
-                val_0 = self.weights_LDS[ind_0]
-                val_1 = self.weights_LDS[ind_1]
-                weight = type_det(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
-            else:
-                weight = np.ones_like(depths)
-            weight = self.transform(type_det(weight))
-            
-            # convert to tensor
-            sample_out['clean_{}'.format(i)] = cleans  # [C, H, W]
-            sample_out['left_{}'.format(i)] = lefts  # [C, H, W]
-            sample_out['right_{}'.format(i)] = rights  # [C, H, W]
-            sample_out['aif_{}'.format(i)] = aifs  # [C, H, W]
-            sample_out['mask_{}'.format(i)] = mask  # [1, H, W]
-            sample_out['weight_{}'.format(i)] = weight  # [1, H, W]
-            sample_out['uv_coord_{}'.format(i)] = uvs  # [2, H, W]
-            sample_out['3d_coord_{}'.format(i)] = points  # [3, H, W]
+        
+        # preprocess data
+        cleans = self.transform(self.output_type(self.clean_patches[index] / 255.0))
+        lefts = self.transform(self.output_type(self.left_patches[index] / 255.0))
+        rights = self.transform(self.output_type(self.right_patches[index] / 255.0))
+        aifs = self.transform(self.output_type(self.aif_patches[index] / 255.0))
+        uvs = self.transform(self.output_type(self.uv_patches[index]))
+        points = self.transform(self.output_type(self.points_patches[index]))
+        
+        mask_uv_start = (self.uv_patches[index, ..., 0] >= 0) & (self.uv_patches[index, ..., 1] >= 0)
+        mask_uv_end = (self.uv_patches[index, ..., 0] <= self.image_size[1] - 1) & (self.uv_patches[index, ..., 1] <= self.image_size[0] - 1)
+        mask = (self.points_patches[index, ..., -1] > 0) & mask_uv_start & mask_uv_end
+        mask = self.transform(self.output_type(mask))
+        
+        # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
+        depths = self.points_patches[index, ..., -1]
+        if self.weights_LDS is not None:
+            ind = (depths - self.min_depth) / (self.max_depth - self.min_depth) * (int(self.LDS_ratio) - 1)
+            ind_0 = np.int64(ind)
+            ind_1 = np.clip(ind_0 + 1, 0, int(self.LDS_ratio) - 1)
+            val_0 = self.weights_LDS[ind_0]
+            val_1 = self.weights_LDS[ind_1]
+            weight = self.output_type(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
+        else:
+            weight = np.ones_like(depths)
+        weight = self.transform(self.output_type(weight))
+        
+        # convert to tensor
+        sample_out['clean'] = cleans  # [C, H, W]
+        sample_out['left'] = lefts  # [C, H, W]
+        sample_out['right'] = rights  # [C, H, W]
+        sample_out['aif'] = aifs  # [C, H, W]
+        sample_out['mask'] = mask  # [1, H, W]
+        sample_out['weight'] = weight  # [1, H, W]
+        sample_out['uv_coord'] = uvs  # [2, H, W]
+        sample_out['3d_coord'] = points  # [3, H, W]
         
         return sample_out
     
     def __len__(self):
-        return len(self.clean_patches[0])
+        return len(self.clean_patches)
 
 
 class DPPSFDataModule(LightningDataModule):
@@ -142,21 +124,15 @@ class DPPSFDataModule(LightningDataModule):
         self.transform = transforms.Compose([
             transforms.ToTensor()  # Converts image to tensor
         ])
-        
-        if model_cfg.multires:
-            num_level = len(calib_data['training_data']['clean_patch'])
-            patchRatio = [np.float32(calib_data['training_data']['patchSize_px'][i] / calib_data['training_data']['patchSize_mm'][i]) for i in range(num_level)]  # [px / mm]
-        else:
-            num_level = 1
-            patchRatio = [np.float32(calib_data['training_data']['patchSize_px'][0] / calib_data['training_data']['patchSize_mm'][0])]
+        patchRatio = np.float32(calib_data['training_data']['patchSize_px'] / calib_data['training_data']['patchSize_mm'])
         minmax_depth = (calib_data['training_data']['depth_min'], calib_data['training_data']['depth_max'])
         
         self.meta_data = {'image_size': calib_data['camera']['image_size'],
                           'focal_mm': calib_data['training_data']['focal_mm'], 
                           'aperture': calib_data['training_data']['aperture'],
                           'fnumber': calib_data['training_data']['fnumber'],
-                          'depth_range': minmax_depth, 'umtx': calib_data['camera']['umtx'],
-                          'patchRatio': patchRatio, 'num_level': num_level, 'focal_distance': focal_distance}
+                          'depth_range': minmax_depth, 'patchRatio': patchRatio, 'focal_distance': focal_distance,
+                          'mtx': calib_data['camera']['mtx'], 'umtx': calib_data['camera']['umtx'], 'dist': calib_data['camera']['dist']}
         
     def setup(self, stage: Optional[str] = None) -> None:
         """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.

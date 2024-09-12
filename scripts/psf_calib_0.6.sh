@@ -1,2 +1,0 @@
-
-python train_psf_calib.py calib=calib_240219_F06 exp_name=240219_calib_F06

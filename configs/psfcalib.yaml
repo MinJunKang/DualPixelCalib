@@ -12,6 +12,7 @@ defaults:
 exp_name: 240219_calib_F15
 task_name: psfcalib
 dirname: "checkpoints"
+evaluate_on_lidar: True
 
 # path to load checkpoint
 load_ckpt:

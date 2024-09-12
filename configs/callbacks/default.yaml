@@ -2,6 +2,7 @@ defaults:
   - model_checkpoint
   - model_summary
   - rich_progress_bar
+  - learningrate_logger
   - _self_
 
 model_checkpoint:
@@ -9,6 +10,7 @@ model_checkpoint:
   filename: "epoch_{epoch:03d}"
   save_last: True
   auto_insert_metric_name: False
+  every_n_epochs: ${trainer.check_val_every_n_epoch}
 
 model_summary:
   max_depth: -1

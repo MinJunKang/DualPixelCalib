@@ -4,23 +4,30 @@ seed: 42
 observation:
   scale: 1.0
   focal_mm: 50
+  focal_distance_mm: 600
 
 intboard:
   board_name: calibboard
-  observation: F06_av16
+  path_rgb: F06_av16
+  path_lidar:
   board_size_mm: 40
+  exp_name: 240219_calib_F06
+  task_name: intcalib
 
 psfboard:
   board_name: psfboard3
-  observation: F06_v2
+  template_scale: 0.5
+  path_rgb: F06_v2
+  path_lidar: # for evaluation on lidar
   board_size_mm: 20
   target_focal: 2.8
-  focal_distance_mm: 600
-  patch_size_area: 0.75
-  patch_size_mul: 32
+  patch_area: 0.6
+  patch_mul: 16
+  diffusion_input_res: 64
   diffusion_epoch: 50
+  diffusion_batchsize: 8
+  sampling_timesteps: 150
   use_diffusion_denoising: true
-  batchsize: 8
 
 blobParams:
   minthres: 0.1
