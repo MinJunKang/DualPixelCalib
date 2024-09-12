@@ -271,12 +271,12 @@ class PSFVolumeModule(LightningModule):
         
         # save result
         if batch_idx in [351, 363, 370, 375, 406, 435, 485, 547]:
-            clean = batch['clean_1'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            mask_gradient = repeat(preds['mask_gradient_1'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
-            left_pred = preds['left_1'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            right_pred = preds['right_1'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            left_gt = preds['left_gt_1'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            right_gt = preds['right_gt_1'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
+            clean = batch['clean'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
+            mask_gradient = repeat(preds['mask_gradient'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
+            left_pred = preds['left'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
+            right_pred = preds['right'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
+            left_gt = preds['left_gt'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
+            right_gt = preds['right_gt'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             pts_plots = np.hstack([clean, mask_gradient, left_pred, left_gt, right_pred, right_gt])
             self.logger.log_image(key=f'Source | Mask | left_blurred | left_gt | right_blurred | right_gt_{batch_idx}', images=[pts_plots])
     
