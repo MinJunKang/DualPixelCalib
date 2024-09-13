@@ -75,9 +75,7 @@ def findhomography(rvec, tvec, newmtx, px_size, py_size, mm_size):
     M = np.concatenate([Rmat[:, :2], tvec], axis=1)
     homo = np.matmul(newmtx, M)
     homo /= homo[2, 2]
-    scaler = np.eye(3)
-    scaler[0, 0] *= px_size / mm_size  # scaling (mm to px)
-    scaler[1, 1] *= py_size / mm_size  # scaling (mm to px)
+    scaler = np.diagflat([px_size / mm_size, py_size / mm_size, 1.0])  # scaling (mm to px)
     homo = np.matmul(homo, np.linalg.inv(scaler))
     
     return homo

@@ -3,7 +3,7 @@ _target_: src.model.model.PSFVolumeModule
 
 model_cfg:
   level: 16  # depth level of the hashgrid
-  patchsize_uv: 111  # this is crucial for learning the PSF, Make sure kernel is big enough.
+  patchRatio: 0.36  # this is crucial for learning the PSF, make sure this is big enough
   gradient_method: 'sobel'
   w_diffusion: false
   normalize_input: true

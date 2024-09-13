@@ -18,7 +18,7 @@ from src.extern.pacnet.pac import conv2d
 from torchmetrics import MeanMetric
 
 
-class PSFVolumeModule(LightningModule):
+class NovelPSFVolumeModule(LightningModule):
     
     def __init__(
         self,
@@ -36,9 +36,8 @@ class PSFVolumeModule(LightningModule):
         # define volume boundary condition
         depth_range = deepcopy(meta_data['depth_range'])
         self.patchSize = meta_data['patchSize_px']
-        self.kernel_size = math.ceil(self.patchSize * model_cfg.patchRatio)
-        self.kernel_size = self.kernel_size if self.kernel_size % 2 == 1 else self.kernel_size + 1
-        self.kernel_uv_size, self.bound_xy = self.calc_kernel_size(meta_data['umtx'], self.kernel_size, meta_data['patchRatio'], depth_range)
+        self.kernel_uv_size = model_cfg.patchsize_uv  # [maximum patch size in uv coord]
+        self.kernel_size, self.bound_xy = self.calc_kernel_size(meta_data['umtx'], self.kernel_uv_size, meta_data['patchRatio'], depth_range)
         
         # diffusion model
         if model_cfg.w_diffusion and diffusion_model is not None:
@@ -82,7 +81,7 @@ class PSFVolumeModule(LightningModule):
         
         return architecture
         
-    def calc_kernel_size(self, K_mat, kernel_size, patchRatio, depth_range):
+    def calc_kernel_size(self, K_mat, kernel_uvsize, patchRatio, depth_range):
         '''
         Args:
             Kmat: camera matrix
@@ -101,10 +100,10 @@ class PSFVolumeModule(LightningModule):
         '''
         fx, fy = K_mat[0, 0], K_mat[1, 1]
         fmin = min(fx, fy)
-        kernel_uvsize = math.ceil(kernel_size * fmin / (patchRatio * depth_range[1]))
-        kernel_uvsize = kernel_uvsize if kernel_uvsize % 2 == 1 else kernel_uvsize + 1
+        kernel_size = int(patchRatio * kernel_uvsize / fmin * depth_range[1])
+        kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
         bound_xy = kernel_size / patchRatio
-        return kernel_uvsize, bound_xy
+        return kernel_size, bound_xy
     
     @torch.no_grad()
     def gradient_apply(self, feat, clean, mask):

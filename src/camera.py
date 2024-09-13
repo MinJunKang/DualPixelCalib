@@ -146,6 +146,11 @@ class CameraObject(object):
     
     # train PSF calibration model
     def trainPSFCalibModel(self):
+        '''
+            We only care about depth-varying PSF model with fixed focus distance
+            Focus varying PSF model is out of consideration
+            If the board is captured with far distance, our method suffers from resolution loss
+        '''
         
         # seed everything
         L.seed_everything(self.opts.seed, workers=True)
@@ -164,6 +169,7 @@ class CameraObject(object):
                                              model_cfg=self.opts.model.model_cfg, 
                                              calib_data=self.calib_data, 
                                              focal_distance=self.opts.calib.observation.focal_distance_mm,
+                                             board_scale=self.opts.calib.psfboard.template_scale,
                                              precision=str(self.opts.trainer.precision))
         diffusion_model = self.diffusion if use_diffusion_denoising else None
         
