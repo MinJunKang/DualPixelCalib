@@ -47,8 +47,8 @@ def main(cfg: DictConfig):
             imgcg = cv2.imread(f"/workspace/dataset/dual-pixel-defocus-disparity/Quantitative/{img_name}_B.png")
             depth = cv2.imread(f"/workspace/dataset/ICCP2020_DP_dataset_processed/DEPTH/{depth_name[i]}.TIF", cv2.IMREAD_GRAYSCALE)
             # result = cv2.imread(f"/workspace/dataset/dual-pixel-defocus-disparity/results/{img_name}.png")
-            # camera_obj.estimateDepthFromPSF(model, imglg, imgrg, imgcg, img_name, gt_depth=depth, level=41, pad=10, resize_val=1.0)
-            camera_obj.estimateDepthFromPSF_2stage(model, imglg, imgrg, imgcg, img_name, gt_depth=depth, coarse_level=31, fine_level=7, pad=110, resize_val=0.5)
+            camera_obj.estimateDepthFromPSF(model, imglg, imgrg, imgcg, img_name, gt_depth=depth, level=41, pad=10, resize_val=1.0)
+            # camera_obj.estimateDepthFromPSF_2stage(model, imglg, imgrg, imgcg, img_name, gt_depth=depth, coarse_level=31, fine_level=7, pad=110, resize_val=0.5)
         
         # imglg = cv2.imread(f"/workspace/dataset/testsample/DSC_0019_LEFT.TIF")
         # imgrg = cv2.imread(f"/workspace/dataset/testsample/DSC_0019_RIGHT.TIF")

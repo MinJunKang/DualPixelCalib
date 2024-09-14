@@ -17,8 +17,8 @@ intboard:
 psfboard:
   board_name: psfboard3
   template_scale: 0.5
-  path_rgb: F15
-  path_lidar: # for evaluation on lidar
+  path_rgb: 240912_F15
+  path_lidar: 240912_RGBD  # for evaluation on lidar
   board_size_mm: 40
   target_focal: 2.8
   patch_area: 0.6
@@ -27,7 +27,7 @@ psfboard:
   diffusion_epoch: 50
   diffusion_batchsize: 8
   sampling_timesteps: 150
-  use_diffusion_denoising: true
+  use_diffusion_denoising: false
 
 blobParams:
   minthres: 0.1

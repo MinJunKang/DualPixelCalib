@@ -11,9 +11,9 @@ class HashPSFGrid(nn.Module):
     
     def __init__(self, 
                  in_dim: int, 
-                 bound_xy: float = 10.0,
-                 min_depth: float = 0.1,
-                 max_depth: float = 1.0,
+                 bound_xy: float,
+                 min_depth: float,
+                 max_depth: float,
                  num_level: int = 16,
                  min_res: int = 16, 
                  max_res: int = 1024,
@@ -51,7 +51,7 @@ class HashPSFGrid(nn.Module):
         
     def forward(self, points):
         assert points.ndim == 2
-        npoints_c = (points - self.coord_min) / (self.coord_max - self.coord_min)
+        npoints_c = (points - self.coord_min) / (self.coord_max - self.coord_min)  # [0, 1]
         feature = self.encoder(npoints_c.clamp(min=0, max=1))
         return feature
 

@@ -104,7 +104,6 @@ class DPPSFDataModule(LightningDataModule):
                  model_cfg,
                  calib_data,
                  focal_distance,
-                 board_scale,
                  LDS_cfg, 
                  batch_size: int,
                  num_workers: int,
@@ -125,15 +124,16 @@ class DPPSFDataModule(LightningDataModule):
         self.transform = transforms.Compose([
             transforms.ToTensor()  # Converts image to tensor
         ])
-        patchRatio = np.float32(calib_data['training_data']['patchSize_px'] / calib_data['training_data']['patchSize_mm']) * board_scale
         minmax_depth = (calib_data['training_data']['depth_min'], calib_data['training_data']['depth_max'])
         
         self.meta_data = {'image_size': calib_data['camera']['image_size'],
                           'focal_mm': calib_data['training_data']['focal_mm'], 
                           'aperture': calib_data['training_data']['aperture'],
                           'fnumber': calib_data['training_data']['fnumber'],
+                          'patchSize_px': calib_data['training_data']['patchSize_px'],
+                          'px_ratio_max': calib_data['training_data']['px_ratio_max'],
+                          'xy_ratio_max': calib_data['training_data']['xy_ratio_max'],
                           'focal_distance': focal_distance, 'depth_range': minmax_depth,
-                          'patchRatio': patchRatio, 'patchSize_px': calib_data['training_data']['patchSize_px'],
                           'mtx': calib_data['camera']['mtx'], 'umtx': calib_data['camera']['umtx'], 'dist': calib_data['camera']['dist']}
         
     def setup(self, stage: Optional[str] = None) -> None:

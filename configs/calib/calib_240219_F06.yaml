@@ -27,7 +27,7 @@ psfboard:
   diffusion_epoch: 50
   diffusion_batchsize: 8
   sampling_timesteps: 150
-  use_diffusion_denoising: true
+  use_diffusion_denoising: false
 
 blobParams:
   minthres: 0.1

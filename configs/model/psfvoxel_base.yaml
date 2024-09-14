@@ -2,8 +2,8 @@
 _target_: src.model.model.PSFVolumeModule
 
 model_cfg:
-  level: 16  # depth level of the hashgrid
-  patchRatio: 0.36  # this is crucial for learning the PSF, make sure this is big enough
+  level: 64  # depth level of the psf volume
+  patchRatio: 0.44   # this is crucial for learning the PSF, make sure this is big enough
   gradient_method: 'sobel'
   w_diffusion: false
   normalize_input: true
@@ -14,7 +14,7 @@ model_cfg:
       _target_: src.model.components.hashgrid.HashPSFGrid
       _partial_: true
       in_dim: 3
-      num_level: ${model.model_cfg.level}
+      num_level: 16  # multi-level of the hashgrid
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true
@@ -48,8 +48,8 @@ scheduler:
   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
   _partial_: true
   mode: min
-  factor: 0.1
-  patience: 5
+  factor: 0.5
+  patience: 4
 
 # compile model for faster training with pytorch 2.0
 compile: false

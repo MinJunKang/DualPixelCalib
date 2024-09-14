@@ -139,10 +139,23 @@ class CameraObject(object):
         mask_end = (training_data['patch_uv'][..., 0] <= self.calib_data['camera']['image_size'][1] - 1) & (training_data['patch_uv'][..., 1] <= self.calib_data['camera']['image_size'][0] - 1)
         mask = torch.tensor(mask_start & mask_end & (training_data['patch_3d'][..., -1] > 0))
         depth = torch.tensor(training_data['patch_3d'][..., -1])
-        depth_mean = masked_mean(depth.reshape(-1), mask.reshape(-1), dim=0)
-        depth_min, depth_max = masked_minmax(depth.reshape(-1), mask.reshape(-1), dim=0)
+        depth = rearrange(depth, 'b h w -> b (h w)')
+        mask = rearrange(mask, 'b h w -> b (h w)')
+        depth_min, depth_max = depth[mask].min().item(), depth[mask].max().item()
         
-        return {'focal_mm': focal_mm, 'aperture': aperture, 'fnumber': fnumber, 'depth_mean': depth_mean.item(), 'depth_min': depth_min.item(), 'depth_max': depth_max.item()}
+        # get pixel ratio
+        depth_mean = masked_mean(depth, mask, dim=1)
+        patch_u = torch.tensor(rearrange(training_data['patch_uv'][..., 0], 'b h w -> b (h w)'))
+        patch_v = torch.tensor(rearrange(training_data['patch_uv'][..., 1], 'b h w -> b (h w)'))
+        patch_u_min, patch_u_max = masked_minmax(patch_u, mask, dim=1)
+        patch_v_min, patch_v_max = masked_minmax(patch_v, mask, dim=1)
+        image_px = torch.maximum(patch_u_max - patch_u_min, patch_v_max - patch_v_min)
+        px_ratio = (image_px / training_data['patchSize_px'])
+        xy_ratio = px_ratio * depth_mean
+        px_ratio_max = px_ratio.max().item()
+        xy_ratio_max = xy_ratio.max().item()
+        
+        return {'focal_mm': focal_mm, 'aperture': aperture, 'fnumber': fnumber, 'depth_min': depth_min, 'depth_max': depth_max, 'px_ratio_max': px_ratio_max, 'xy_ratio_max': xy_ratio_max}
     
     # train PSF calibration model
     def trainPSFCalibModel(self):
@@ -169,7 +182,6 @@ class CameraObject(object):
                                              model_cfg=self.opts.model.model_cfg, 
                                              calib_data=self.calib_data, 
                                              focal_distance=self.opts.calib.observation.focal_distance_mm,
-                                             board_scale=self.opts.calib.psfboard.template_scale,
                                              precision=str(self.opts.trainer.precision))
         diffusion_model = self.diffusion if use_diffusion_denoising else None
         
@@ -192,8 +204,8 @@ class CameraObject(object):
             
         # save PSF volume related results
         # self.savePSFImage(model)
-        # self.savePSFVolume(model)
-        # import pdb; pdb.set_trace()
+        self.savePSFVolume(model)
+        import pdb; pdb.set_trace()
         return model
     
     def trainDiffusionModel(self):
@@ -282,7 +294,7 @@ class CameraObject(object):
     def savePSFVolume(self, psf_model, level=32, pad=60):
         psf_model.eval()
         
-        patch_size = psf_model.hparams.model_cfg.psf_volume.patch_uvsize
+        patch_size = psf_model.kernel_uv_size
         min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
         depths = torch.linspace(min_depth, max_depth, level).cuda()
         
@@ -315,7 +327,7 @@ class CameraObject(object):
     @torch.no_grad()
     def estimateDepthFromPSF(self, psf_model, imglg, imgrg, imgcg, idx, gt_depth=None, level=255, pad=60, resize_val=1.0):
         psf_model.eval()
-        img_patch_size = 223
+        img_patch_size = 334
         stride = 67
         border = 51
         # if we do resize:
@@ -328,7 +340,7 @@ class CameraObject(object):
         h_img_ori, w_img_ori = self.calib_data['camera']['image_size']
         h_ratio, w_ratio = h_img / h_img_ori, w_img / w_img_ori
         max_ratio = max(h_ratio, w_ratio)
-        patch_size = int(psf_model.hparams.model_cfg.psf_volume.patch_uvsize * max_ratio)
+        patch_size = int(psf_model.kernel_uv_size * max_ratio)
         patch_size = patch_size + 1 if patch_size % 2 == 0 else patch_size
         img_patch_size = int(img_patch_size * max_ratio)
         stride = int(stride * max_ratio)
@@ -445,7 +457,8 @@ class CameraObject(object):
         h_img_ori, w_img_ori = self.calib_data['camera']['image_size']
         h_ratio, w_ratio = h_img / h_img_ori, w_img / w_img_ori
         max_ratio = max(h_ratio, w_ratio)
-        patch_size = int(psf_model.hparams.model_cfg.psf_volume.patch_uvsize * max_ratio)
+        
+        patch_size = int(psf_model.kernel_uv_size * max_ratio)
         patch_size = patch_size + 1 if patch_size % 2 == 0 else patch_size
         # img_patch_size = int(img_patch_size * max_ratio)
         # stride = int(stride * max_ratio)
@@ -503,9 +516,6 @@ class CameraObject(object):
                 coords = psf_model.blur_volume['embedder'].cuda()(coords)
             kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
             kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=patch_size, kw=patch_size)
-            if 'psfgrid' in psf_model.blur_volume:
-                kernel_w_coarse = rearrange(psf_model.blur_volume['psfgrid'].cuda()(rearrange(xyz_coords, 'kh kw l c -> 1 l kh kw c')), 'b c n kh kw -> b n kh kw c')
-                kernel_w = kernel_w * kernel_w_coarse[0]
             psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
             
             # normalization
@@ -541,9 +551,6 @@ class CameraObject(object):
                 coords = psf_model.blur_volume['embedder'].cuda()(coords)
             kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
             kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=patch_size, kw=patch_size)
-            if 'psfgrid' in psf_model.blur_volume:
-                kernel_w_coarse = rearrange(psf_model.blur_volume['psfgrid'].cuda()(rearrange(xyz_coords_fine, 'kh kw l c -> 1 l kh kw c')), 'b c n kh kw -> b n kh kw c')
-                kernel_w = kernel_w * kernel_w_coarse[0]
             psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
             
             # normalization
