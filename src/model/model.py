@@ -63,6 +63,13 @@ class PSFVolumeModule(LightningModule):
         self.train_loss = MeanMetric()
         self.val_loss = MeanMetric()
         
+        # visualization
+        self.num_samples = meta_data['num_samples']
+        self.num_visualize = min(self.num_samples, meta_data['num_visualize'])
+        self.num_track = int(self.num_visualize * 0.25)
+        self.visualized_indices = []
+        self.tracked_indices = []
+        
     def create_network(self, model_cfg, bound_xy, depth_range):
         architecture = nn.ModuleDict()
         
@@ -275,19 +282,21 @@ class PSFVolumeModule(LightningModule):
         pass
     
     def validation_step(self, batch, batch_idx: int):
-        loss, preds = self.model_step(batch)
         
-        loss_total = 0.0
-        for key in loss:
-            for key_weight in self.hparams.model_cfg.loss_weight:
-                if key_weight in key:
-                    loss_total += loss[key] * self.hparams.model_cfg.loss_weight[key_weight]
-                    self.log(f'val/{key}', loss[key], on_step=False, on_epoch=True, prog_bar=True)
-        self.val_loss(loss_total)
-        self.log('val/loss', self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        if batch_idx in self.visualized_indices:
         
-        # save result
-        if batch_idx in [351, 363, 370, 375, 406, 435, 485, 547]:
+            loss, preds = self.model_step(batch)
+            
+            loss_total = 0.0
+            for key in loss:
+                for key_weight in self.hparams.model_cfg.loss_weight:
+                    if key_weight in key:
+                        loss_total += loss[key] * self.hparams.model_cfg.loss_weight[key_weight]
+                        self.log(f'val/{key}', loss[key], on_step=False, on_epoch=True, prog_bar=True)
+            self.val_loss(loss_total)
+            self.log('val/loss', self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        
+            # save result
             clean = batch['clean'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             mask_gradient = repeat(preds['mask_gradient'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
             left_pred = preds['left'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
@@ -297,9 +306,13 @@ class PSFVolumeModule(LightningModule):
             pts_plots = np.hstack([clean, mask_gradient, left_pred, left_gt, right_pred, right_gt])
             self.logger.log_image(key=f'Source | Mask | left_pred | left_gt | right_pred | right_gt [sample {batch_idx}]', images=[pts_plots])
     
+    def on_validation_epoch_start(self) -> None:
+        "Lightning hook that is called when a validation epoch starts."
+        self.visualized_indices = sorted(random.sample(range(self.num_samples), self.num_visualize - len(self.tracked_indices)) + self.tracked_indices)
+    
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        pass
+        self.tracked_indices = sorted(random.sample(self.visualized_indices, self.num_track))
     
     def test_step(self, batch, batch_idx: int):
         pass

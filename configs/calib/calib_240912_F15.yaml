@@ -16,9 +16,9 @@ intboard:
 
 psfboard:
   board_name: psfboard3
-  template_scale: 0.5
-  path_rgb: 240912_F15
-  path_lidar: 240912_RGBD  # for evaluation on lidar
+  template_scale: 0.25
+  path_rgb: 240912_F15_Part
+  path_lidar: 240912_RGBD_Part  # for evaluation on lidar
   board_size_mm: 40
   target_focal: 2.8
   patch_area: 0.6

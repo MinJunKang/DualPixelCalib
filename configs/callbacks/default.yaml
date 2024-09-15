@@ -3,6 +3,7 @@ defaults:
   - model_summary
   - rich_progress_bar
   - learningrate_logger
+  - early_stopping
   - _self_
 
 model_checkpoint:
@@ -11,6 +12,11 @@ model_checkpoint:
   save_last: True
   auto_insert_metric_name: False
   every_n_epochs: ${trainer.check_val_every_n_epoch}
+
+early_stopping:
+  monitor: "train/loss_epoch"
+  patience: 10
+  mode: "min"
 
 model_summary:
   max_depth: -1

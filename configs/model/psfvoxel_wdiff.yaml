@@ -3,7 +3,7 @@ _target_: src.model.model.PSFVolumeModule
 
 model_cfg:
   level: 64  # depth level of the psf volume
-  patchRatio: 0.44   # this is crucial for learning the PSF, make sure this is big enough
+  patchRatio: 0.46   # this is crucial for learning the PSF, make sure this is big enough
   gradient_method: 'sobel'
   w_diffusion: true
   normalize_input: true
@@ -49,7 +49,7 @@ scheduler:
   _partial_: true
   mode: min
   factor: 0.5
-  patience: 4
+  patience: 2
 
 # compile model for faster training with pytorch 2.0
 compile: false

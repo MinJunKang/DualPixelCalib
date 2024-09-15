@@ -107,6 +107,7 @@ class DPPSFDataModule(LightningDataModule):
                  LDS_cfg, 
                  batch_size: int,
                  num_workers: int,
+                 num_visualize: int,
                  pin_memory: bool,
                  precision: str,
                  train_val_split: Tuple[int, int] = (90_000, 10_000)):
@@ -127,6 +128,8 @@ class DPPSFDataModule(LightningDataModule):
         minmax_depth = (calib_data['training_data']['depth_min'], calib_data['training_data']['depth_max'])
         
         self.meta_data = {'image_size': calib_data['camera']['image_size'],
+                          'num_samples': len(calib_data['training_data']['clean_patch']),
+                          'num_visualize': num_visualize,
                           'focal_mm': calib_data['training_data']['focal_mm'], 
                           'aperture': calib_data['training_data']['aperture'],
                           'fnumber': calib_data['training_data']['fnumber'],

@@ -16,7 +16,7 @@ intboard:
 
 psfboard:
   board_name: psfboard3
-  template_scale: 0.5
+  template_scale: 0.25
   path_rgb: F06_v2
   path_lidar: # for evaluation on lidar
   board_size_mm: 20
