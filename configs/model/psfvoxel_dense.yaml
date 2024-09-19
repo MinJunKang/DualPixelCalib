@@ -11,16 +11,17 @@ model_cfg:
 
   psf_volume:
     psf_feat:
-      _target_: src.model.components.hashgrid.HashPSFGrid
+      _target_: src.model.components.voxgrid.PSFGrid
       _partial_: true
-      in_dim: 3
-      num_level: 16  # multi-level of the hashgrid
+      out_dim: 32
+      level: ${model.model_cfg.level}  # voxel grid
+      psfVsize: 128
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true
       in_dim: 5
       hidden_dims: [64, 64]
-      out_dim: 6
+      out_dim: 2
       weight_norm: true
       weight_init: false
       activation: 'Softplus'
@@ -36,6 +37,7 @@ model_cfg:
     sym: 1.0
     regl1: 0.01
     tv: 0.01
+    tv_dense: 1e-5
 
 optimizer:
   _target_: torch.optim.AdamW

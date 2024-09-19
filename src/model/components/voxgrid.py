@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
-from einops import rearrange
+from einops import rearrange, repeat
 
 
 # total variance loss
@@ -21,17 +21,19 @@ total_variation_cuda = load(
 
 
 class PSFGrid(nn.Module):
-    def __init__(self, channel, level, psfVsize, bound_xy, min_depth, max_depth, for_test=False):
+    def __init__(self, out_dim, level, psfVsize, bound_xy, min_depth, max_depth, for_test=False):
         super(PSFGrid, self).__init__()
-        self.channel = channel
+        self.in_dim = 3
+        self.out_dim = out_dim
         self.level = level
         self.psfVsize = psfVsize
+        self.type = 'dense'
         
         if for_test:
             psfV_numpy = self.create_synthetic_psf(level, psfVsize)
             self.psfVolume = Parameter(1e-3*torch.from_numpy(psfV_numpy), requires_grad=False)
         else:
-            self.psfVolume = Parameter(torch.zeros(1, self.channel, level, psfVsize, psfVsize).normal_(mean=0, std=0.0001), requires_grad=True)
+            self.psfVolume = Parameter(torch.zeros(1, self.out_dim, level, psfVsize, psfVsize).normal_(mean=0, std=0.0001), requires_grad=True)
         
         self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_depth]))
         self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_depth]))
@@ -63,10 +65,13 @@ class PSFGrid(nn.Module):
         for i in range(level):
             psfV_numpy[:, :, i] = self.create_circular_mask(psfVsize, psfVsize, (psfVsize // 2, psfVsize // 2), radius[i]) * 1000
         return np.float32(psfV_numpy)
-    
-    def scale_volume_grid(self, new_size):
-        # only apply to single grid case
-        self.psfVolume = nn.ParameterList([Parameter(F.interpolate(self.psfVolume.data, size=tuple(new_size), mode='trilinear', align_corners=True), requires_grad=True)])
+        
+    def scale_volume_grid(self, new_world_size):
+        if self.out_dim == 0:
+            self.psfVolume = nn.Parameter(torch.zeros([1, self.out_dim, *new_world_size]))
+        else:
+            self.psfVolume = nn.Parameter(
+                F.interpolate(self.psfVolume.data, size=tuple(new_world_size), mode='trilinear', align_corners=True))
     
     def total_variation_add_grad(self, wx, wy, wz, dense_mode=True):
         if self.psfVolume.grad is not None:
@@ -75,12 +80,17 @@ class PSFGrid(nn.Module):
     
     def forward(self, points):
         '''
-            points: (B, C, H, W, 3)
+            points: (N, 3)
             interpolate given xyz coordinate
         '''
-        npoints_c = (points - self.coord_min) / (self.coord_max - self.coord_min)
+        shape = points.shape[:-1]
+        points = points.reshape(1, 1, 1, -1, 3)
+        npoints_c = ((points - self.coord_min) / (self.coord_max - self.coord_min)).flip((-1,)) * 2 - 1
         output = F.grid_sample(self.psfVolume, npoints_c, mode='bilinear', padding_mode='border', align_corners=True)
-        return output.abs()
+        output = output.reshape(self.out_dim,-1).T.reshape(*shape,self.out_dim)
+        if self.out_dim == 1:
+            output = output.squeeze(-1)
+        return output
     
     def compute_grid(self, device=None):
         if device is None: 

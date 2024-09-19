@@ -20,7 +20,7 @@ model_cfg:
       _partial_: true
       in_dim: 5
       hidden_dims: [64, 64]
-      out_dim: 6
+      out_dim: 2
       weight_norm: true
       weight_init: false
       activation: 'Softplus'

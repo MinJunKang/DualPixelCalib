@@ -189,9 +189,11 @@ class PSFVolumeModule(LightningModule):
     def model_step(self, batch):
         loss, output = dict(), dict()
         
-        # preprocessing
+        # inputs
+        channel_dim = self.blur_volume['mlpnet'].out_dim // 2
         clean_img = batch['clean']
-        mask_rgb = repeat(batch['mask'], 'b 1 h w -> b c h w', c=3) > 0
+        assert clean_img.shape[1] == channel_dim
+        mask_rgb = repeat(batch['mask'], 'b 1 h w -> b c h w', c=channel_dim) > 0
         
         # create valid mask
         with torch.no_grad():
@@ -277,6 +279,11 @@ class PSFVolumeModule(LightningModule):
                 
         return loss, output
     
+    def on_after_backward(self) -> None:
+        if self.blur_volume['featnet'].type == 'dense':
+            weight = self.hparams.model_cfg.loss_weight['tv_dense'] * self.blur_volume['featnet'].psfVsize / 128
+            self.blur_volume['featnet'].total_variation_add_grad(weight, weight, weight)
+    
     def on_train_start(self) -> None:
         """Lightning hook that is called when training begins."""
         # by default lightning executes validation step sanity checks before training starts,
@@ -318,7 +325,7 @@ class PSFVolumeModule(LightningModule):
         
             # save result
             clean = batch['clean'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            mask = repeat(preds['mask'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
+            mask = repeat(preds['mask'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w c', c=clean.shape[-1])
             left_pred = preds['left'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             right_pred = preds['right'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             left_gt = preds['left_gt'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)

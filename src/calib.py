@@ -13,6 +13,7 @@ from src.utils.io import img2gray
 from src.utils.calib_utils import SubPixRefinement
 import src.utils.math as geomath
 from einops import repeat, rearrange
+from kornia.color import rgb_to_grayscale
 
 
 
@@ -259,16 +260,17 @@ class CalibBoard(object):
         assert observations['device'] == 'camera'
         
         # initialize data
+        channel = 1  # 3 for rgb case
         training_data = {}
         circenters = self.psf_board['cir2d'].reshape(-1, 3)
         patchSize_px = math.ceil((self.psf_board['size_px'] / self.psf_board['num_grid'] * self.opts.calib.psfboard.patch_area) / self.opts.calib.psfboard.patch_mul) * self.opts.calib.psfboard.patch_mul
         patchSize_mm = self.opts.calib.intboard.board_size_mm / (self.psf_board['size_px'] / self.psf_board['num_grid']) * patchSize_px
         training_data['patchSize_px'] = patchSize_px
         training_data['patchSize_mm'] = patchSize_mm
-        training_data['clean_patch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 3], dtype=np.float32)
-        training_data['noisy_patch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 3], dtype=np.float32)
-        training_data['lpatch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 3], dtype=np.float32)
-        training_data['rpatch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 3], dtype=np.float32)
+        training_data['clean_patch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, channel], dtype=np.float32)
+        training_data['noisy_patch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, channel], dtype=np.float32)
+        training_data['lpatch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, channel], dtype=np.float32)
+        training_data['rpatch'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, channel], dtype=np.float32)
         training_data['patch_3d'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 3], dtype=np.float32)
         training_data['patch_uv'] = np.zeros([len(observations['samples']), len(circenters), patchSize_px, patchSize_px, 2], dtype=np.float32)
         training_data['rvec'] = np.zeros([len(observations['samples']), len(circenters), 3, 1], dtype=np.float32)
@@ -320,13 +322,20 @@ class CalibBoard(object):
                     prj_uv, _ = cv2.projectPoints(template_3d.reshape(-1, 3), rvec, tvec, mtx, dist)  # uv coords
                     patches_uv = geomath.subpixel_cropper_batch(prj_uv.reshape(h_t, w_t, 2), circenters_refined, patchsize)
                     
+                    # convert color to gray
+                    if channel == 1:
+                        clean_patches = rgb_to_grayscale(torch.tensor(clean_patches).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
+                        patches_c = rgb_to_grayscale(torch.tensor(patches_c).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
+                        patches_l = rgb_to_grayscale(torch.tensor(patches_l).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
+                        patches_r = rgb_to_grayscale(torch.tensor(patches_r).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
+                    
                     # save data
                     training_data['rvec'][nidx] = repeat(rvec, 'p q -> n p q', n=len(circenters))
                     training_data['tvec'][nidx] = repeat(tvec, 'p q -> n p q', n=len(circenters))
-                    training_data['clean_patch'][nidx] = clean_patches
-                    training_data['noisy_patch'][nidx] = patches_c
-                    training_data['lpatch'][nidx] = patches_l
-                    training_data['rpatch'][nidx] = patches_r
+                    training_data['clean_patch'][nidx] = clean_patches.clip(0, 255)
+                    training_data['noisy_patch'][nidx] = patches_c.clip(0, 255)
+                    training_data['lpatch'][nidx] = patches_l.clip(0, 255)
+                    training_data['rpatch'][nidx] = patches_r.clip(0, 255)
                     training_data['patch_3d'][nidx] = patches_3d
                     training_data['patch_uv'][nidx] = patches_uv
         
