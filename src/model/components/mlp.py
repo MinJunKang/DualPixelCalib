@@ -44,11 +44,13 @@ class MLP(nn.Module):
         scale_term: float = 0.001,
         skip_connections: Optional[Tuple[int]] = None,
         activation: Optional[str] = "None",
+        out_activation: Optional[str] = "None",
         weight_init: bool = False,
         weight_norm: bool = False,
         bias: float = 0.0,
     ) -> None:
         super().__init__()
+        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus']
         self.in_dim = in_dim
         self.hidden_dims = hidden_dims
         self.out_dim = out_dim
@@ -56,6 +58,7 @@ class MLP(nn.Module):
         self.skip_connections = skip_connections
         self._skip_connections: Set[int] = set(skip_connections) if skip_connections else set()
         self.activation = activation_string_to_func(activation)
+        self.out_activation = activation_string_to_func(out_activation)
         self.weight_init = weight_init
         self.weight_norm = weight_norm
         self.bias = bias
@@ -119,7 +122,10 @@ class MLP(nn.Module):
             x = layer(x)
             if self.activation is not None and i < len(self.layers) - 2:
                 x = self.activation(x)
-        return x.abs() * self.scale_term
+        if self.out_activation is not None:
+            return self.out_activation(x) * self.scale_term
+        else:
+            return x.abs() * self.scale_term
     
     
     
@@ -132,10 +138,11 @@ class TCNNMLP(nn.Module):
         out_dim: int,
         scale_term: float = 0.001,
         activation: Optional[str] = "None",
+        out_activation: Optional[str] = "None",
     ) -> None:
         super().__init__()
+        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus']
         self.out_dim = out_dim
-        
         self.net = tcnn.Network(
             n_input_dims=in_dim,
             n_output_dims=out_dim,
@@ -147,7 +154,12 @@ class TCNNMLP(nn.Module):
                 "n_hidden_layers": n_hidden_layers,
             },
         )
+        self.out_activation = activation_string_to_func(out_activation)
         self.scale_term = scale_term
         
     def forward(self, in_tensor):
-        return self.net(in_tensor).abs() * self.scale_term
+        
+        if self.out_activation is not None:
+            return self.out_activation(self.net(in_tensor)) * self.scale_term
+        else:
+            return self.net(in_tensor).abs() * self.scale_term

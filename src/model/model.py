@@ -115,7 +115,7 @@ class PSFVolumeModule(LightningModule):
         return kernel_uvsize, bound_xy
     
     @torch.no_grad()
-    def gradient_apply(self, feat, clean, mask):
+    def gradient_apply(self, feat, clean, mask_rgb):
         assert self.gradient_method in ['sobel', 'laplacian', 'none'], 'Invalid gradient method'
         # compute gradient map
         if self.gradient_method == 'laplacian':
@@ -126,7 +126,6 @@ class PSFVolumeModule(LightningModule):
             gradient = feat
         
         # fill the centers (fill hole)
-        mask_rgb = repeat(mask, 'b 1 h w -> b c h w', c=3) > 0
         medianvalue = torch.median(gradient[(clean > 0) & mask_rgb]).item()
         holevalue = medianvalue * torch.ones_like(gradient)
         gradient = torch.where((clean > 0) & mask_rgb, holevalue, gradient)
@@ -134,19 +133,19 @@ class PSFVolumeModule(LightningModule):
         
         return gradient
     
-    def forward_psf_volume(self, pts3d, uv_coord, mask, network):
-        kernel_channel = network['mlpnet'].out_dim
+    def forward_psf_volume(self, pts3d, uv_coord, mask):
+        kernel_channel = self.blur_volume['mlpnet'].out_dim
         batch, n, kh, kw, c = pts3d.shape
         masked_pts3d, masked_uv_coord = pts3d[mask].reshape(-1, 3), uv_coord[mask].reshape(-1, 2)
-        feat = network['featnet'](masked_pts3d)
+        feat = self.blur_volume['featnet'](masked_pts3d)
         norm_coords = torch.cat([masked_uv_coord, masked_pts3d], dim=1)
         norm_coords[..., 2:-1] = (norm_coords[..., 2:-1] / (self.bound_xy / 2))
         norm_coords[..., -1] = (norm_coords[..., -1] - self.min_depth) / (self.max_depth - self.min_depth) * 2. - 1.
         
-        if 'embedder' in network:
-            norm_coords = network['embedder'](norm_coords)
+        if 'embedder' in self.blur_volume:
+            norm_coords = self.blur_volume['embedder'](norm_coords)
             
-        kernel_w = network['mlpnet'](torch.cat([norm_coords, feat], dim=1))
+        kernel_w = self.blur_volume['mlpnet'](torch.cat([norm_coords, feat], dim=1))
         indices = torch.arange(batch * n * kh * kw, device=pts3d.device).view(batch, n, kh, kw)
         kernel_w = segment_coo(src=kernel_w, 
                                index=indices[mask].reshape(-1), 
@@ -155,23 +154,42 @@ class PSFVolumeModule(LightningModule):
         kernel_w = rearrange(kernel_w, '(b n kh kw) c -> b n kh kw c', b=batch, n=n, kh=kh, kw=kw)
         
         return kernel_w[..., :kernel_channel // 2], kernel_w[..., kernel_channel // 2:]
+    
+    def infer_psf_volume(self, pts3d, uv_coord, kernel_size):
+        kernel_channel = self.blur_volume['mlpnet'].out_dim
+        feat = self.blur_volume['featnet'](pts3d.reshape(-1, 3))
+        norm_coords = torch.cat([uv_coord.reshape(-1, 2), pts3d.reshape(-1, 3)], dim=1)
+        norm_coords[..., 2:-1] = (norm_coords[..., 2:-1] / (self.bound_xy / 2))
+        norm_coords[..., -1] = (norm_coords[..., -1] - self.min_depth) / (self.max_depth - self.min_depth) * 2. - 1.
+        
+        if 'embedder' in self.blur_volume:
+            norm_coords = self.blur_volume['embedder'](norm_coords)
+            
+        kernel_w = self.blur_volume['mlpnet'](torch.cat([norm_coords, feat], dim=1))
+        kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=kernel_size, kw=kernel_size)
+        return kernel_w[..., :kernel_channel // 2], kernel_w[..., kernel_channel // 2:]
+    
+    def DPKernels_to_Disparity(self, kernel_left, kernel_right, depth_range):
+        import pdb; pdb.set_trace()
         
     def model_step(self, batch):
         loss, output = dict(), dict()
         
         # preprocessing
         clean_img = batch['clean']
-        gradient_left = self.gradient_apply(batch['left'], clean_img, batch['mask'])
-        gradient_right = self.gradient_apply(batch['right'], clean_img, batch['mask'])
+        mask_rgb = repeat(batch['mask'], 'b 1 h w -> b c h w', c=3) > 0
         
         # create valid mask
         with torch.no_grad():
             ones_kernel = torch.ones((clean_img.shape[1], clean_img.shape[1], self.kernel_size, self.kernel_size), device=clean_img.device)
             mask = F.conv2d(clean_img, weight=ones_kernel, stride=1, padding=self.kernel_size // 2, dilation=1) > 0
-            mask_gradient = rearrange((mask.type_as(clean_img) * batch['mask']).sum(dim=1), 'b h w -> b (h w)')
+            mask_rgb = mask_rgb & mask
+            mask_float = rearrange(mask_rgb.sum(dim=1), 'b h w -> b (h w)').type_as(clean_img)
+            gradient_left = self.gradient_apply(batch['left'], clean_img, mask_rgb)
+            gradient_right = self.gradient_apply(batch['right'], clean_img, mask_rgb)
             gradient_left = gradient_left * batch['weight']
             gradient_right = gradient_right * batch['weight']
-            output.update({'mask_gradient': rearrange(mask_gradient > 0, 'b (h w) -> b h w', h=self.patchSize, w=self.patchSize)})
+            output.update({'mask': rearrange(mask_float > 0, 'b (h w) -> b h w', h=self.patchSize, w=self.patchSize)})
             
             # apply diffusion if enabled
             if self.diffusion_model is not None:
@@ -187,7 +205,6 @@ class PSFVolumeModule(LightningModule):
             
         # normalize input
         if self.hparams.model_cfg.normalize_input:
-            mask_rgb = repeat(batch['mask'], 'b 1 h w -> b c h w', c=3) > 0
             clean_img = normalize(clean_img, mask_rgb)  # normalize
             blur_left_img = normalize(blur_left_img, mask_rgb)  # normalize
             blur_right_img = normalize(blur_right_img, mask_rgb)  # normalize
@@ -196,7 +213,7 @@ class PSFVolumeModule(LightningModule):
         # unfolding
         uvcoord_unfold = unfolding(batch['uv_coord'], kernel_size=self.kernel_size)  # already distorted uv coordinates
         pts3d_unfold = unfolding(batch['3d_coord'], kernel_size=self.kernel_size)  # 3d scene points
-        mask_unfold = unfolding(rearrange(mask_gradient, 'b (h w) -> b 1 h w', h=self.patchSize, w=self.patchSize), kernel_size=self.kernel_size)  # mask
+        mask_unfold = unfolding(rearrange(mask_float, 'b (h w) -> b 1 h w', h=self.patchSize, w=self.patchSize), kernel_size=self.kernel_size)  # mask
         mask_unfold = mask_unfold[..., 0] > 0
         
         # normalized uv coord
@@ -205,7 +222,7 @@ class PSFVolumeModule(LightningModule):
         
         # kernel sampling from psf volume
         pts3d_unfold[..., :2] = pts3d_unfold[..., :2] - pts3d_unfold[:, :, self.kernel_size // 2:self.kernel_size // 2 + 1, self.kernel_size // 2:self.kernel_size // 2 + 1, :2]
-        kernel_left, kernel_right = self.forward_psf_volume(pts3d_unfold, uvcoord_unfold, mask_unfold, self.blur_volume)
+        kernel_left, kernel_right = self.forward_psf_volume(pts3d_unfold, uvcoord_unfold, mask_unfold)
         
         # reblurred image
         kernel_left = rearrange(kernel_left, 'b (h w) kh kw c -> b c kh kw h w', h=self.patchSize, w=self.patchSize)
@@ -223,36 +240,26 @@ class PSFVolumeModule(LightningModule):
         loss_regl1_left = torch.mean(torch.norm(rearrange(kernel_left, 'b c kh kw h w -> b c (kh kw) h w'), p=1, dim=2))
         loss_regl1_right = torch.mean(torch.norm(rearrange(kernel_right, 'b c kh kw h w -> b c (kh kw) h w'), p=1, dim=2))
         loss.update({'loss_regl1': loss_regl1_left + loss_regl1_right})
-        loss_tv_left_img = torch.mean(total_variation(reblurred_left, reduction='mean'))
-        loss_tv_right_img = torch.mean(total_variation(reblurred_right, reduction='mean'))
-        # loss_tv_left = torch.mean(total_variation(total_variation(rearrange(kernel_left, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
-        # loss_tv_right = torch.mean(total_variation(total_variation(rearrange(kernel_right, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
-        # loss.update({'loss_tv': loss_tv_left + loss_tv_right + loss_tv_left_img + loss_tv_right_img})
-        loss.update({'loss_tv': loss_tv_left_img + loss_tv_right_img})
+        loss_tv_left_img = torch.mean(total_variation(reblurred_left * mask_rgb, reduction='mean'))
+        loss_tv_right_img = torch.mean(total_variation(reblurred_right * mask_rgb, reduction='mean'))
+        loss_tv_left = torch.mean(total_variation(total_variation(rearrange(kernel_left, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
+        loss_tv_right = torch.mean(total_variation(total_variation(rearrange(kernel_right, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
+        loss.update({'loss_tv': loss_tv_left + loss_tv_right + loss_tv_left_img + loss_tv_right_img})
+        # loss.update({'loss_tv': loss_tv_left_img + loss_tv_right_img})
+        # loss.update({'loss_tv': loss_tv_left + loss_tv_right})
         
-        # Volumetric symmetric loss at center of image
+        # Volumetric symmetric loss at (u, v) = (0, 0)
         if self.hparams.model_cfg.use_symmetric_loss:
-            
-            depths = torch.linspace(self.min_depth, self.max_depth, self.hparams.model_cfg.level).to(clean_img.device)
+            depths = torch.linspace(0.0, 1.0, self.hparams.model_cfg.level).to(clean_img.device) * (self.max_depth - self.min_depth) + self.min_depth
             xy_coords = torch.linspace(-1/2*self.bound_xy, 1/2*self.bound_xy, self.kernel_uv_size).to(clean_img.device)
             xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [kernel_size_uv, kernel_size_uv, level, 3]
             xyz_coords = rearrange(xyz_coords, 'h w l c -> (h w l) c')
-            feat_dp = self.blur_volume['featnet'](xyz_coords)
-            norm_coords = torch.cat([torch.zeros_like(xyz_coords[..., :2]), xyz_coords], dim=-1)
-            norm_coords[..., 2:-1] = (norm_coords[..., 2:-1] / (self.bound_xy / 2))
-            norm_coords[..., -1] = (norm_coords[..., -1] - self.min_depth) / (self.max_depth - self.min_depth) * 2. - 1.
-    
-            if 'embedder' in self.blur_volume:
-                norm_coords = self.blur_volume['embedder'](norm_coords)
-                
-            kernel_w = self.blur_volume['mlpnet'](torch.cat([norm_coords, feat_dp], dim=1))
-            kernel_w = rearrange(kernel_w, '(h w l) c -> h w l c', h=self.kernel_uv_size, w=self.kernel_uv_size)
-                
-            kernel_w_left = kernel_w[..., :self.blur_volume['mlpnet'].out_dim // 2]
-            kernel_w_right = kernel_w[..., self.blur_volume['mlpnet'].out_dim // 2:]
+            
+            # get psf volume
+            kernel_w_left, kernel_w_right = self.infer_psf_volume(xyz_coords, torch.zeros_like(xyz_coords[..., :2]), self.kernel_uv_size)
             
             # symmetric loss
-            loss.update({'loss_sym': charbonnier_loss(kernel_w_left, torch.flip(kernel_w_right, [1]), reduction='sum')})
+            loss.update({'loss_sym': charbonnier_loss(kernel_w_left, torch.flip(kernel_w_right, [2]), reduction='sum')})
         output.update({'left': reblurred_left, 'right': reblurred_right, 'left_gt': blur_left_img, 'right_gt': blur_right_img, 'clean': clean_img})
                 
         return loss, output
@@ -298,12 +305,12 @@ class PSFVolumeModule(LightningModule):
         
             # save result
             clean = batch['clean'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            mask_gradient = repeat(preds['mask_gradient'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
+            mask = repeat(preds['mask'][0].cpu().detach().numpy().clip(0, 1), 'h w -> h w 3')
             left_pred = preds['left'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             right_pred = preds['right'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             left_gt = preds['left_gt'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
             right_gt = preds['right_gt'][0].permute(1, 2, 0).cpu().detach().numpy().clip(0, 1)
-            pts_plots = np.hstack([clean, mask_gradient, left_pred, left_gt, right_pred, right_gt])
+            pts_plots = np.hstack([clean, mask, left_pred, left_gt, right_pred, right_gt])
             self.logger.log_image(key=f'Source | Mask | left_pred | left_gt | right_pred | right_gt [sample {batch_idx}]', images=[pts_plots])
     
     def on_validation_epoch_start(self) -> None:

@@ -15,6 +15,7 @@ model_cfg:
       _partial_: true
       in_dim: 3
       num_level: 16  # multi-level of the hashgrid
+      max_res: 256
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true
@@ -24,6 +25,7 @@ model_cfg:
       weight_norm: true
       weight_init: false
       activation: 'Softplus'
+      out_activation: 'Softplus'
       scale_term: 0.001
     embedder:
       _target_: src.model.components.embedding.FourierEmbedder

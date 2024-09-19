@@ -15,7 +15,8 @@ from src.utils.visualizer import visualize_PSFVolume, save_as_gif, visualize_cor
 from src.model.utils.common import masked_mean, masked_minmax, normalize
 from src.utils.instantiators import instantiate_callbacks, instantiate_loggers
 import torch.nn.functional as F
-from torchvision.utils import save_image
+from kornia.filters import sobel
+from kornia.color import rgb_to_grayscale
 
 
 
@@ -158,7 +159,7 @@ class CameraObject(object):
         return {'focal_mm': focal_mm, 'aperture': aperture, 'fnumber': fnumber, 'depth_min': depth_min, 'depth_max': depth_max, 'px_ratio_max': px_ratio_max, 'xy_ratio_max': xy_ratio_max}
     
     # train PSF calibration model
-    def trainPSFCalibModel(self):
+    def trainPSFCalibModel(self, vis_result=False):
         '''
             We only care about depth-varying PSF model with fixed focus distance
             Focus varying PSF model is out of consideration
@@ -203,8 +204,9 @@ class CameraObject(object):
             trainer.fit(model=model, datamodule=datamodule, ckpt_path=self.opts.get("load_ckpt"))
             
         # save PSF volume related results
-        self.savePSFImage(model)
-        self.savePSFVolume(model)
+        if vis_result:
+            self.savePSFImage(model)
+            self.savePSFVolume(model)
         return model
     
     def trainDiffusionModel(self):
@@ -241,8 +243,11 @@ class CameraObject(object):
         h_img, w_img = self.calib_data['camera']['image_size']
         patch_size = psf_model.kernel_uv_size
         min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(min_depth, max_depth, level).cuda()
+        depths = torch.linspace(0.0, 1.0, level).cuda() * (max_depth - min_depth) + min_depth
         umtx = torch.from_numpy(np.float32(self.calib_data['camera']['umtx'])).cuda()
+        
+        xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, patch_size).cuda()
+        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
         
         result_img_left = []
         result_img_right = []
@@ -260,16 +265,9 @@ class CameraObject(object):
                     uv_coord_patch[..., 0] = (uv_coord_patch[..., 0] - umtx[0, 2]) / umtx[0, 0]
                     uv_coord_patch[..., 1] = (uv_coord_patch[..., 1] - umtx[1, 2]) / umtx[1, 1]
                     
-                    # xyz coord
-                    xyz_coord_patch = torch.ones((patch_size, patch_size, 3), dtype=torch.float32).cuda()
-                    xyz_coord_patch[..., 0] = u_coord
-                    xyz_coord_patch[..., 1] = v_coord
-                    xyz_coord_patch = torch.einsum('ij,klj->kli', torch.inverse(umtx), xyz_coord_patch) * depths[n_level]
-                    xyz_coord_patch[..., :2] = xyz_coord_patch[..., :2] - xyz_coord_patch[patch_size // 2:patch_size // 2 + 1, patch_size // 2:patch_size // 2 + 1, :2]
-                    
                     # get psf volume
-                    feat = psf_model.blur_volume['featnet'].cuda()(xyz_coord_patch.reshape(-1, 3))
-                    coords = torch.cat([uv_coord_patch.reshape(-1, 2), xyz_coord_patch.reshape(-1, 3)], dim=1)
+                    feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords.reshape(-1, 3))
+                    coords = torch.cat([uv_coord_patch.reshape(-1, 2), xyz_coords.reshape(-1, 3)], dim=1)
                     coords[..., 2:-1] = (coords[..., 2:-1] / (psf_model.bound_xy / 2))
                     coords[..., -1] = (coords[..., -1] - psf_model.min_depth) / (psf_model.max_depth - psf_model.min_depth) * 2. - 1.
                     if 'embedder' in psf_model.blur_volume:
@@ -297,7 +295,7 @@ class CameraObject(object):
         
         patch_size = psf_model.kernel_uv_size
         min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(min_depth, max_depth, level).cuda()
+        depths = torch.linspace(0.0, 1.0, level).cuda() * (max_depth - min_depth) + min_depth
         
         # create uv coords
         uv_coords = torch.stack(torch.meshgrid(torch.arange(patch_size), torch.arange(patch_size), indexing='xy'), dim=-1).cuda()
@@ -328,45 +326,53 @@ class CameraObject(object):
         visualize_PSFVolume(psfV_right[..., 2].cpu().numpy(), min_depth, max_depth, Path(self.opts.paths.output_dir), 'right_b')
         
     @torch.no_grad()
-    def estimateDepthFromPSF(self, psf_model, imglg, imgrg, imgcg, idx, gt_depth=None, level=255, pad=60, resize_val=1.0):
+    def estimateDepthFromPSF(self, psf_model, imglg, imgrg, img_name, gt_depth=None, level=255, pad=60, resize_val=1.0, device='cuda'):
+        psf_model.to(device)
         psf_model.eval()
         img_patch_size = 223  # manual parameter
         kernel_size = (img_patch_size * psf_model.hparams.model_cfg.patchRatio)
-        stride = 83  # the bigger this number, the faster the inference, coarser output map
-        border = 51  # should be greater than half of kernel size
+        stride = 21  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
         
         # if we do resize:
         if gt_depth is not None:
             gt_depth = cv2.resize(gt_depth, (0, 0), fx=resize_val, fy=resize_val)
-        imglg = cv2.resize(imglg, (0, 0), fx=resize_val, fy=resize_val)
-        imgrg = cv2.resize(imgrg, (0, 0), fx=resize_val, fy=resize_val)
+        imglg = cv2.resize(imglg, (0, 0), fx=resize_val, fy=resize_val) / 255.
+        imgrg = cv2.resize(imgrg, (0, 0), fx=resize_val, fy=resize_val) / 255.
+        imgcg = (imglg + imgrg) / 2
         h_img, w_img = imglg.shape[:2]
         h_img_ori, w_img_ori = self.calib_data['camera']['image_size']
-        h_ratio, w_ratio = h_img / h_img_ori, w_img / w_img_ori
-        max_ratio = max(h_ratio, w_ratio)
         
-        kernel_size = int(kernel_size * max_ratio)
-        img_patch_size = int(img_patch_size * max_ratio)
-        stride = int(stride * max_ratio)
-        border = int(border * max_ratio)
+        kernel_size = int(kernel_size * resize_val)
+        img_patch_size = int(img_patch_size * resize_val)
+        stride = int(stride * resize_val)
         
         kernel_size = kernel_size + 1 if kernel_size % 2 == 0 else kernel_size
         img_patch_size = img_patch_size + 1 if img_patch_size % 2 == 0 else img_patch_size
         stride = stride + 1 if stride % 2 == 0 else stride
+        border = kernel_size // 2 + (kernel_size - stride) // 2  # should be greater than half of kernel size
         border = border + 1 if border % 2 == 0 else border
+        half_patch_size, half_kernel_size, half_stride = img_patch_size // 2, kernel_size // 2, stride // 2
         
         # camera matrix
         umtx = self.calib_data['camera']['umtx']
-        umtx = torch.from_numpy(np.float32(umtx)).cuda()
-        umtx[:2] = umtx[:2] * resize_val
+        umtx = torch.from_numpy(np.float32(umtx)).to(device)
+        umtx[:2, :2] = umtx[:2, :2] * resize_val
+        umtx[0, 2] = (umtx[0, 2] - (w_img_ori - w_img / resize_val) * 0.5) * resize_val
+        umtx[1, 2] = (umtx[1, 2] - (h_img_ori - h_img / resize_val) * 0.5) * resize_val
 
         # prepare patches
-        img_l_patches = [imglg[y:y+img_patch_size, x:x+img_patch_size] 
-                         for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
-        img_r_patches = [imgrg[y:y+img_patch_size, x:x+img_patch_size] 
-                         for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
-        uv_coords = [torch.stack(torch.meshgrid(torch.arange(x, x + img_patch_size), torch.arange(y, y + img_patch_size), indexing='xy'), dim=-1).cuda()
-                     for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
+        imglg = torch.Tensor(imglg)[None,...].permute(0, 3, 1, 2).float().to(device)
+        imgrg = torch.Tensor(imgrg)[None,...].permute(0, 3, 1, 2).float().to(device)
+        imgcg = rgb_to_grayscale(torch.Tensor(imgcg)[None,...].permute(0, 3, 1, 2).float().to(device))
+        img_l_patches = [imglg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        img_r_patches = [imgrg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        img_c_patches = [imgcg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1]
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        
+        uv_coords = [torch.stack(torch.meshgrid(torch.arange(x-half_patch_size, x+half_patch_size+1), torch.arange(y-half_patch_size, y+half_patch_size+1), indexing='xy'), dim=-1).to(device)
+                     for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
         uv_coords = torch.stack(uv_coords)
 
         # uv coord normalization
@@ -375,29 +381,170 @@ class CameraObject(object):
         uv_coords_norm[..., 1] = (uv_coords_norm[..., 1] - umtx[1, 2]) / umtx[1, 1]
 
         min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(min_depth, max_depth, level).cuda()
-        depth_level = torch.zeros([h_img, w_img], dtype=torch.long)
-        depth_cost = torch.zeros([h_img, w_img])
+        depths = torch.linspace(0.0, 1.0, level).to(device) * (max_depth - min_depth) + min_depth
+        depth_level = torch.zeros([h_img, w_img], dtype=torch.long, device=device)
+        depth_cost = torch.zeros([h_img, w_img], device=device)
+        sobel_val = torch.zeros([h_img, w_img], device=device)
         
         # xyz approximation
-        xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, kernel_size).cuda()
+        xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, kernel_size).to(device)
         xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
-
-        for n in tqdm(range(uv_coords_norm.shape[0])):
+        
+        num_pixels = len(uv_coords)
+        for n in tqdm(range(num_pixels)):
             
             # get uv coord (center crop)
-            half_patch_size, half_img_size = kernel_size // 2, img_patch_size // 2
-            uv_coords_norm_sampled = uv_coords_norm[n, half_img_size - half_patch_size:half_img_size + half_patch_size + 1, half_img_size - half_patch_size:half_img_size + half_patch_size + 1]
+            uv_coords_norm_sampled = uv_coords_norm[n, half_patch_size-half_kernel_size:half_patch_size+half_kernel_size+1, half_patch_size-half_kernel_size:half_patch_size+half_kernel_size+1]
             uv_coords_norm_sampled = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=level)
-
+            
             # get psf volume
-            feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords.reshape(-1, 3))
+            psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size)
+            import pdb; pdb.set_trace()
+            
+            # normalization
+            psfk_left = psfk_left / (psfk_left.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
+            psfk_right = psfk_right / (psfk_right.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5
+            
+            for i in range(level):
+                cv2.imwrite(f'psf{i}_left.png', psfk_left[i].cpu().numpy() / psfk_left[i].max().item() * 255) 
+                cv2.imwrite(f'psf{i}_right.png', psfk_right[i].cpu().numpy() / psfk_right[i].max().item() * 255) 
+            import pdb; pdb.set_trace()
+            
+            # flipped kernel
+            psfk_left_flip = torch.flip(psfk_left, [2])
+            psfk_right_flip = torch.flip(psfk_right, [2])
+
+            l = F.conv2d(img_l_patches[n], psfk_right.permute(0, 3, 1, 2), padding='same').squeeze()
+            r = F.conv2d(img_r_patches[n], psfk_left.permute(0, 3, 1, 2), padding='same').squeeze()
+            l = l[:,border:-border, border:-border]
+            r = r[:,border:-border, border:-border]
+            
+            l_flip = F.conv2d(img_l_patches[n], psfk_left_flip.permute(0, 3, 1, 2), padding='same').squeeze()
+            r_flip = F.conv2d(img_r_patches[n], psfk_right_flip.permute(0, 3, 1, 2), padding='same').squeeze()
+            l_flip = l_flip[:,border:-border, border:-border]
+            r_flip = r_flip[:,border:-border, border:-border]
+            
+            err = torch.sqrt(torch.mean((l - r) ** 2, dim=(1, 2))) + torch.sqrt(torch.mean((l_flip - r_flip) ** 2, dim=(1, 2)))
+            fill_coords = uv_coords[n, 
+                                    half_patch_size-half_stride:half_patch_size+half_stride + 1,
+                                    half_patch_size-half_stride:half_patch_size+half_stride + 1]
+            fill_coords = fill_coords.reshape(-1, 2).permute(1, 0)
+            conf = F.softmin(err, dim=0)
+            fval, min_level = torch.max(conf, 0)
+            depth_cost[fill_coords[1,:], fill_coords[0,:]] = fval
+            depth_level[fill_coords[1,:], fill_coords[0,:]] = min_level
+            
+            # get sobel map
+            sobel_feature = torch.abs(sobel(img_c_patches[n]))[:, :, 1:-1, 1:-1]
+            sobel_val[fill_coords[1,:], fill_coords[0,:]] = torch.mean(sobel_feature)
+        
+        # convert to image
+        depth_cost = (depth_cost / depth_cost.max() * 255).cpu().numpy().astype('uint8')
+        depth_level = (depth_level / (level - 1) * 255).cpu().numpy().astype('uint8')
+        sobel_val = (sobel_val / sobel_val.max()).cpu().numpy()
+        depth_cost = depth_cost * sobel_val
+        
+        # crop result
+        h_endvalue, w_endvalue = ((h_img-half_patch_size) // stride) * stride, ((w_img-half_patch_size) // stride) * stride
+        depth_cost = depth_cost[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+        depth_level = depth_level[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+        confidence = (depth_cost - depth_cost.min()) / (depth_cost.max() - depth_cost.min())
+        confidence[confidence == 0] = 1e-8  # assign very small value
+          
+        # make result img
+        cv2.imwrite(f'{self.opts.paths.output_dir}/output_cost_{img_name}.png', depth_cost)
+        cv2.imwrite(f'{self.opts.paths.output_dir}/output_depth_{img_name}.png', depth_level)
+        np.save(f'{self.opts.paths.output_dir}/confidence_{img_name}.npy', confidence)
+        
+        # evaluation by depth
+        if gt_depth is not None:
+            gt_depth = gt_depth[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+            cv2.imwrite(f'{self.opts.paths.output_dir}/gt_depth_{img_name}.png', gt_depth)
+            
+    @torch.no_grad()
+    def estimateDepthFromPSF_2stage(self, psf_model, imglg, imgrg, img_name, gt_depth=None, level=255, pad=60, resize_val=1.0, device='cuda'):
+        
+        # stage 1. orthonormal matching
+        # stage 2. plane matching (plane fitting in patch)
+        
+        psf_model.to(device)
+        psf_model.eval()
+        img_patch_size = 223  # manual parameter
+        kernel_size = (img_patch_size * psf_model.hparams.model_cfg.patchRatio)
+        stride = 67  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
+        
+        # if we do resize:
+        if gt_depth is not None:
+            gt_depth = cv2.resize(gt_depth, (0, 0), fx=resize_val, fy=resize_val)
+        imglg = cv2.resize(imglg, (0, 0), fx=resize_val, fy=resize_val) / 255.
+        imgrg = cv2.resize(imgrg, (0, 0), fx=resize_val, fy=resize_val) / 255.
+        imgcg = (imglg + imgrg) / 2
+        h_img, w_img = imglg.shape[:2]
+        h_img_ori, w_img_ori = self.calib_data['camera']['image_size']
+        
+        kernel_size = int(kernel_size * resize_val)
+        img_patch_size = int(img_patch_size * resize_val)
+        stride = int(stride * resize_val)
+        
+        kernel_size = kernel_size + 1 if kernel_size % 2 == 0 else kernel_size
+        img_patch_size = img_patch_size + 1 if img_patch_size % 2 == 0 else img_patch_size
+        stride = stride + 1 if stride % 2 == 0 else stride
+        border = kernel_size // 2 + (kernel_size - stride) // 2  # should be greater than half of kernel size
+        border = border + 1 if border % 2 == 0 else border
+        half_patch_size, half_kernel_size, half_stride = img_patch_size // 2, kernel_size // 2, stride // 2
+        
+        # camera matrix
+        umtx = self.calib_data['camera']['umtx']
+        umtx = torch.from_numpy(np.float32(umtx)).to(device)
+        umtx[:2, :2] = umtx[:2, :2] * resize_val
+        umtx[0, 2] = (umtx[0, 2] - (w_img_ori - w_img / resize_val) * 0.5) * resize_val
+        umtx[1, 2] = (umtx[1, 2] - (h_img_ori - h_img / resize_val) * 0.5) * resize_val
+
+        # prepare patches
+        imglg = torch.Tensor(imglg)[None,...].permute(0, 3, 1, 2).float().to(device)
+        imgrg = torch.Tensor(imgrg)[None,...].permute(0, 3, 1, 2).float().to(device)
+        imgcg = rgb_to_grayscale(torch.Tensor(imgcg)[None,...].permute(0, 3, 1, 2).float().to(device))
+        img_l_patches = [imglg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        img_r_patches = [imgrg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        img_c_patches = [imgcg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1]
+                         for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        
+        uv_coords = [torch.stack(torch.meshgrid(torch.arange(x-half_patch_size, x+half_patch_size+1), torch.arange(y-half_patch_size, y+half_patch_size+1), indexing='xy'), dim=-1).to(device)
+                     for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
+        uv_coords = torch.stack(uv_coords)
+
+        # uv coord normalization
+        uv_coords_norm = uv_coords.float().clone()
+        uv_coords_norm[..., 0] = (uv_coords_norm[..., 0] - umtx[0, 2]) / umtx[0, 0]
+        uv_coords_norm[..., 1] = (uv_coords_norm[..., 1] - umtx[1, 2]) / umtx[1, 1]
+
+        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
+        depths = torch.linspace(0.0, 1.0, level).to(device) * (max_depth - min_depth) + min_depth
+        depth_coarse = torch.zeros([h_img, w_img], dtype=torch.long, device=device)
+        cost_coarse = torch.zeros([h_img, w_img], device=device)
+        sobel_val = torch.zeros([h_img, w_img], device=device)
+        
+        # xyz approximation
+        xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, kernel_size).to(device)
+        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
+        
+        num_pixels = len(uv_coords)
+        for n in tqdm(range(num_pixels)):
+            
+            # get uv coord (center crop)
+            uv_coords_norm_sampled = uv_coords_norm[n, half_patch_size-half_kernel_size:half_patch_size+half_kernel_size+1, half_patch_size-half_kernel_size:half_patch_size+half_kernel_size+1]
+            uv_coords_norm_sampled = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=level)
+            
+            # get psf volume
+            feat = psf_model.blur_volume['featnet'](xyz_coords.reshape(-1, 3))
             coords = torch.cat([uv_coords_norm_sampled.reshape(-1, 2), xyz_coords.reshape(-1, 3)], dim=1)
             coords[..., 2:-1] = (coords[..., 2:-1] / (psf_model.bound_xy / 2))
             coords[..., -1] = (coords[..., -1] - psf_model.min_depth) / (psf_model.max_depth - psf_model.min_depth) * 2. - 1.
             if 'embedder' in psf_model.blur_volume:
-                coords = psf_model.blur_volume['embedder'].cuda()(coords)
-            kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
+                coords = psf_model.blur_volume['embedder'](coords)
+            kernel_w = psf_model.blur_volume['mlpnet'](torch.cat([coords, feat], dim=1))
             kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=kernel_size, kw=kernel_size)
             psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
             
@@ -405,199 +552,55 @@ class CameraObject(object):
             psfk_left = psfk_left / (psfk_left.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
             psfk_right = psfk_right / (psfk_right.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5
             
-            # torch conv2d is actually cross-correlation, need to flip kernel to correctly perform conv
-            psfk_left = torch.flip(psfk_left, [1, 2])
-            psfk_right = torch.flip(psfk_right, [1, 2])
-            
-            # image patch normalize
-            left_dp_img = torch.Tensor(img_l_patches[n] / 255.)[None,...].permute(0, 3, 1, 2).float().cuda()
-            right_dp_img = torch.Tensor(img_r_patches[n] / 255.)[None,...].permute(0, 3, 1, 2).float().cuda()
-            # normalize ??
+            # flipped kernel
+            psfk_left_flip = torch.flip(psfk_left, [2])
+            psfk_right_flip = torch.flip(psfk_right, [2])
 
-            l = F.conv2d(left_dp_img, psfk_right.permute(0, 3, 1, 2), padding='same').squeeze()
-            r = F.conv2d(right_dp_img, psfk_left.permute(0, 3, 1, 2), padding='same').squeeze()
+            l = F.conv2d(img_l_patches[n], psfk_right.permute(0, 3, 1, 2), padding='same').squeeze()
+            r = F.conv2d(img_r_patches[n], psfk_left.permute(0, 3, 1, 2), padding='same').squeeze()
             l = l[:,border:-border, border:-border]
             r = r[:,border:-border, border:-border]
             
-            err = torch.sqrt(torch.mean((l - r) ** 2, dim=(1, 2)))
+            l_flip = F.conv2d(img_l_patches[n], psfk_left_flip.permute(0, 3, 1, 2), padding='same').squeeze()
+            r_flip = F.conv2d(img_r_patches[n], psfk_right_flip.permute(0, 3, 1, 2), padding='same').squeeze()
+            l_flip = l_flip[:,border:-border, border:-border]
+            r_flip = r_flip[:,border:-border, border:-border]
+            
+            err = torch.sqrt(torch.mean((l - r) ** 2, dim=(1, 2))) + torch.sqrt(torch.mean((l_flip - r_flip) ** 2, dim=(1, 2)))
             fill_coords = uv_coords[n, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1].reshape(-1, 2).permute(1, 0).cpu()
+                                    half_patch_size-half_stride:half_patch_size+half_stride + 1,
+                                    half_patch_size-half_stride:half_patch_size+half_stride + 1]
+            fill_coords = fill_coords.reshape(-1, 2).permute(1, 0)
             conf = F.softmin(err, dim=0)
             fval, min_level = torch.max(conf, 0)
-            depth_cost[fill_coords[1,:], fill_coords[0,:]] = fval
-            depth_level[fill_coords[1,:], fill_coords[0,:]] = min_level
+            cost_coarse[fill_coords[1,:], fill_coords[0,:]] = fval
+            depth_coarse[fill_coords[1,:], fill_coords[0,:]] = min_level
+            
+            # get sobel map
+            sobel_feature = torch.abs(sobel(img_c_patches[n]))[:, :, 1:-1, 1:-1]
+            sobel_val[fill_coords[1,:], fill_coords[0,:]] = torch.mean(sobel_feature)
+        
+        # convert to image
+        cost_coarse = (cost_coarse / cost_coarse.max() * 255).cpu().numpy().astype('uint8')
+        depth_coarse = (depth_coarse / (level - 1) * 255).cpu().numpy().astype('uint8')
+        sobel_val = (sobel_val / sobel_val.max()).cpu().numpy()
+        cost_coarse = cost_coarse * sobel_val
         
         # crop result
-        depth_cost = (depth_cost/depth_cost.max() * 255).cpu().numpy().astype('uint8')
-        depth_level = (depth_level/(level - 1) * 255).cpu().numpy().astype('uint8')
-        depth_cost = cv2.resize(depth_cost, (0, 0), fx=0.5, fy=0.5)
-        depth_level = cv2.resize(depth_level, (0, 0), fx=0.5, fy=0.5)
-        depth_cost = depth_cost[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
-        depth_level = depth_level[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
+        h_endvalue, w_endvalue = ((h_img-half_patch_size) // stride) * stride, ((w_img-half_patch_size) // stride) * stride
+        cost_coarse = cost_coarse[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+        depth_coarse = depth_coarse[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+        confidence = (cost_coarse - cost_coarse.min()) / (cost_coarse.max() - cost_coarse.min())
+        confidence[confidence == 0] = 1e-8  # assign very small value
           
         # make result img
-        cv2.imwrite(f'{self.opts.paths.output_dir}/output_cost_{idx}.png', depth_cost)
-        cv2.imwrite(f'{self.opts.paths.output_dir}/output_depth_{idx}.png', depth_level)
+        cv2.imwrite(f'{self.opts.paths.output_dir}/output_cost_{img_name}.png', cost_coarse)
+        cv2.imwrite(f'{self.opts.paths.output_dir}/output_depth_{img_name}.png', depth_coarse)
+        np.save(f'{self.opts.paths.output_dir}/confidence_{img_name}.npy', confidence)
         
         # evaluation by depth
         if gt_depth is not None:
-            gt_depth = gt_depth[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
-            cv2.imwrite(f'{self.opts.paths.output_dir}/gt_depth_{idx}.png', gt_depth)
-            
-    @torch.no_grad()
-    def estimateDepthFromPSF_2stage(self, psf_model, imglg, imgrg, imgcg, idx, gt_depth=None, coarse_level=16, fine_level=9, pad=10, resize_val=1.0):
-        psf_model.eval()
-        img_patch_size = 111
-        stride = 33
-        border = 25
-        # if we do resize:
-        if gt_depth is not None:
-            gt_depth = cv2.resize(gt_depth, (0, 0), fx=resize_val, fy=resize_val)
-        imglg = cv2.resize(imglg, (0, 0), fx=resize_val, fy=resize_val)
-        imgrg = cv2.resize(imgrg, (0, 0), fx=resize_val, fy=resize_val)
-        
-        h_img, w_img = imglg.shape[:2]
-        h_img_ori, w_img_ori = self.calib_data['camera']['image_size']
-        h_ratio, w_ratio = h_img / h_img_ori, w_img / w_img_ori
-        max_ratio = max(h_ratio, w_ratio)
-        
-        patch_size = int(psf_model.kernel_uv_size * max_ratio)
-        patch_size = patch_size + 1 if patch_size % 2 == 0 else patch_size
-        # img_patch_size = int(img_patch_size * max_ratio)
-        # stride = int(stride * max_ratio)
-        # border = int(border * max_ratio)
-        # img_patch_size = img_patch_size + 1 if img_patch_size % 2 == 0 else img_patch_size
-        # stride = stride + 1 if stride % 2 == 0 else stride
-        # border = border + 1 if border % 2 == 0 else border
-        
-        # new camera matrix
-        umtx = self.calib_data['camera']['umtx']
-        umtx[0, :] *= w_ratio
-        umtx[1, :] *= h_ratio
-        umtx = torch.from_numpy(np.float32(umtx)).cuda()
-
-        # prepare patches
-        img_l_patches = [imglg[y:y+img_patch_size, x:x+img_patch_size] 
-                         for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
-        img_r_patches = [imgrg[y:y+img_patch_size, x:x+img_patch_size] 
-                         for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
-        uv_coords = [torch.stack(torch.meshgrid(torch.arange(x, x + img_patch_size), torch.arange(y, y + img_patch_size), indexing='xy'), dim=-1).cuda()
-                     for y in range(0, h_img - img_patch_size, stride) for x in range(0, w_img - img_patch_size, stride)]
-        uv_coords = torch.stack(uv_coords)
-
-        # uv coord normalization
-        uv_coords_norm = uv_coords.float().clone()
-        uv_coords_norm[..., 0] = (uv_coords_norm[..., 0] - umtx[0, 2]) / umtx[0, 0]
-        uv_coords_norm[..., 1] = (uv_coords_norm[..., 1] - umtx[1, 2]) / umtx[1, 1]
-
-        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(min_depth, max_depth, coarse_level).cuda()
-        depth_level = torch.zeros([h_img, w_img], dtype=torch.long)
-        depth_cost = torch.zeros([h_img, w_img])
-        
-        # xyz approximation
-        xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, patch_size).cuda()
-        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
-
-        for n in tqdm(range(uv_coords_norm.shape[0])):
-            
-            # get uv coord (center crop)
-            half_patch_size, half_img_size = patch_size // 2, img_patch_size // 2
-            uv_coords_norm_sampled = uv_coords_norm[n, half_img_size - half_patch_size:half_img_size + half_patch_size + 1, half_img_size - half_patch_size:half_img_size + half_patch_size + 1]
-            uv_coords_norm_sampled_coarse = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=coarse_level)
-            
-            # image patch normalize
-            left_dp_img = torch.Tensor(img_l_patches[n] / 255.)[None,...].permute(0, 3, 1, 2).float().cuda()
-            right_dp_img = torch.Tensor(img_r_patches[n] / 255.)[None,...].permute(0, 3, 1, 2).float().cuda()
-            
-            ### Coarse Matching Step ###
-
-            # get psf volume
-            feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords.reshape(-1, 3))
-            coords = torch.cat([uv_coords_norm_sampled_coarse.reshape(-1, 2), xyz_coords.reshape(-1, 3)], dim=1)
-            if 'embedder' in psf_model.blur_volume:
-                coords = psf_model.blur_volume['embedder'].cuda()(coords)
-            kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
-            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=patch_size, kw=patch_size)
-            psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
-            
-            # normalization
-            psfk_left = psfk_left / (psfk_left.reshape(coarse_level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
-            psfk_right = psfk_right / (psfk_right.reshape(coarse_level, -1, 3).sum(dim=1))[:, None, None] * 0.5
-            
-            # torch conv2d is actually cross-correlation, need to flip kernel to correctly perform conv
-            psfk_left = torch.flip(psfk_left, [1, 2])
-            psfk_right = torch.flip(psfk_right, [1, 2])
-            l = F.conv2d(left_dp_img, psfk_right.permute(0, 3, 1, 2), padding='same').squeeze()
-            r = F.conv2d(right_dp_img, psfk_left.permute(0, 3, 1, 2), padding='same').squeeze()
-            l = l[:,border:-border, border:-border]
-            r = r[:,border:-border, border:-border]
-            
-            err = torch.sqrt(torch.mean((l - r) ** 2, dim=(1, 2)))
-            fill_coords = uv_coords[n, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1].reshape(-1, 2).permute(1, 0).cpu()
-            conf = F.softmin(err, dim=0)
-            fval_coarse, min_level_coarse = torch.max(conf, 0)
-            
-            ### Fine Matching Step ###
-            eps_depth = (max_depth - min_depth) / coarse_level
-            fine_min_depth, fine_max_depth = max(min_depth, depths[min_level_coarse].item() - eps_depth), min(max_depth, depths[min_level_coarse].item() + eps_depth)
-            fine_depths = torch.linspace(fine_min_depth, fine_max_depth, fine_level).cuda()
-            xyz_coords_fine = torch.stack(torch.meshgrid(xy_coords, xy_coords, fine_depths, indexing='xy'), dim=-1)
-            uv_coords_norm_sampled_fine = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=fine_level)
-            
-            # get psf volume
-            feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords_fine.reshape(-1, 3))
-            coords = torch.cat([uv_coords_norm_sampled_fine.reshape(-1, 2), xyz_coords_fine.reshape(-1, 3)], dim=1)
-            if 'embedder' in psf_model.blur_volume:
-                coords = psf_model.blur_volume['embedder'].cuda()(coords)
-            kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
-            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=patch_size, kw=patch_size)
-            psfk_left, psfk_right = kernel_w[..., :3], kernel_w[..., 3:]
-            
-            # normalization
-            psfk_left = psfk_left / (psfk_left.reshape(fine_level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
-            psfk_right = psfk_right / (psfk_right.reshape(fine_level, -1, 3).sum(dim=1))[:, None, None] * 0.5
-            
-            # torch conv2d is actually cross-correlation, need to flip kernel to correctly perform conv
-            psfk_left = torch.flip(psfk_left, [1, 2])
-            psfk_right = torch.flip(psfk_right, [1, 2])
-            l = F.conv2d(left_dp_img, psfk_right.permute(0, 3, 1, 2), padding='same').squeeze()
-            r = F.conv2d(right_dp_img, psfk_left.permute(0, 3, 1, 2), padding='same').squeeze()
-            l = l[:,border:-border, border:-border]
-            r = r[:,border:-border, border:-border]
-            
-            err = torch.sqrt(torch.mean((l - r) ** 2, dim=(1, 2)))
-            fill_coords = uv_coords[n, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1, 
-                                    img_patch_size//2 - stride//2:img_patch_size//2+stride//2 + 1].reshape(-1, 2).permute(1, 0).cpu()
-            conf = F.softmin(err, dim=0)
-            fval_fine, min_level_fine = torch.max(conf, 0)
-            
-            fval = fval_coarse * fval_fine
-            min_level = min_level_coarse * fine_level + min_level_fine - fine_level // 2
-            
-            depth_cost[fill_coords[1,:], fill_coords[0,:]] = fval
-            depth_level[fill_coords[1,:], fill_coords[0,:]] = min_level
-        
-        # crop result
-        depth_cost = (depth_cost/depth_cost.max() * 255).cpu().numpy().astype('uint8')
-        depth_level = (depth_level/(coarse_level * fine_level - 1) * 255).cpu().numpy().astype('uint8')
-        # depth_cost = cv2.resize(depth_cost, (0, 0), fx=0.5, fy=0.5)
-        # depth_level = cv2.resize(depth_level, (0, 0), fx=0.5, fy=0.5)
-        depth_cost = depth_cost[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
-        depth_level = depth_level[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
-        
-        print('done')    
-        # make result img
-        cv2.imwrite(f'output_cost_{idx}_2stage.png', depth_cost)
-        cv2.imwrite(f'output_depth_{idx}_2stage.png', depth_level)
-        
-        # evaluation by depth
-        if gt_depth is not None:
-            gt_depth = gt_depth[img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+6), img_patch_size//2 - stride//2:-(img_patch_size//2-stride//2+4)]
-            cv2.imwrite(f'gt_depth_{idx}.png', gt_depth)
+            gt_depth = gt_depth[half_patch_size-half_stride:h_endvalue+half_stride+1, half_patch_size-half_stride:w_endvalue+half_stride+1]
+            cv2.imwrite(f'{self.opts.paths.output_dir}/gt_depth_{img_name}.png', gt_depth)
     
     
