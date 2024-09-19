@@ -241,6 +241,7 @@ class CameraObject(object):
         psf_model.to(device)
         psf_model.eval()
         
+        channel_dim = psf_model.blur_volume['mlpnet'].out_dim // 2
         h_img, w_img = self.calib_data['camera']['image_size']
         patch_size = psf_model.kernel_uv_size
         min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
@@ -276,7 +277,7 @@ class CameraObject(object):
                         coords = psf_model.blur_volume['embedder'].cuda()(coords)
                     kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
                     kernel_w = kernel_w.reshape(patch_size, patch_size, -1)
-                    psfk_left, psfk_right = kernel_w[..., :3].cpu().numpy(), kernel_w[..., 3:].cpu().numpy()
+                    psfk_left, psfk_right = kernel_w[..., :channel_dim].cpu().numpy(), kernel_w[..., channel_dim:].cpu().numpy()
                     result_psf_colsl.append((psfk_left - psfk_left.min()) / (psfk_left.max() - psfk_left.min()) * 255)
                     result_psf_colsr.append((psfk_right - psfk_right.min()) / (psfk_right.max() - psfk_right.min()) * 255)
                     
@@ -323,6 +324,7 @@ class CameraObject(object):
         img_patch_size = 223  # manual parameter
         kernel_size = (img_patch_size * psf_model.hparams.model_cfg.patchRatio)
         stride = 67  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
+        channel_dim = psf_model.blur_volume['mlpnet'].out_dim // 2
         
         # if we do resize:
         if gt_depth is not None:
@@ -355,6 +357,9 @@ class CameraObject(object):
         imglg = torch.Tensor(imglg)[None,...].permute(0, 3, 1, 2).float().to(device)
         imgrg = torch.Tensor(imgrg)[None,...].permute(0, 3, 1, 2).float().to(device)
         imgcg = rgb_to_grayscale(torch.Tensor(imgcg)[None,...].permute(0, 3, 1, 2).float().to(device))
+        if channel_dim == 1:
+            imglg = rgb_to_grayscale(imglg)
+            imgrg = rgb_to_grayscale(imgrg)
         img_l_patches = [imglg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
                          for y in range(half_patch_size, h_img-half_patch_size, stride) for x in range(half_patch_size, w_img-half_patch_size, stride)]
         img_r_patches = [imgrg[:, :, y-half_patch_size:y+half_patch_size+1, x-half_patch_size:x+half_patch_size+1] 
@@ -392,13 +397,13 @@ class CameraObject(object):
             psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size, resize=True)
             
             # normalization
-            psfk_left = psfk_left / (psfk_left.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
-            psfk_right = psfk_right / (psfk_right.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5
+            psfk_left = psfk_left / (psfk_left.reshape(level, -1, channel_dim).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
+            psfk_right = psfk_right / (psfk_right.reshape(level, -1, channel_dim).sum(dim=1))[:, None, None] * 0.5
             
-            for i in range(level):
-                cv2.imwrite(f'psf{i}_left.png', psfk_left[i].cpu().numpy() / psfk_left[i].max().item() * 255) 
-                cv2.imwrite(f'psf{i}_right.png', psfk_right[i].cpu().numpy() / psfk_right[i].max().item() * 255) 
-            import pdb; pdb.set_trace()
+            # for i in range(level):
+            #     cv2.imwrite(f'psf{i}_left.png', psfk_left[i].cpu().numpy() / psfk_left[i].max().item() * 255) 
+            #     cv2.imwrite(f'psf{i}_right.png', psfk_right[i].cpu().numpy() / psfk_right[i].max().item() * 255) 
+            # import pdb; pdb.set_trace()
             
             # flipped kernel
             psfk_left_flip = torch.flip(psfk_left, [2])

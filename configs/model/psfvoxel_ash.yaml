@@ -11,10 +11,9 @@ model_cfg:
 
   psf_volume:
     psf_feat:
-      _target_: src.model.components.hashgrid.HashPSFGrid
+      _target_: src.model.components.ashgrid.HashPSFGrid
       _partial_: true
-      in_dim: 3
-      num_level: 16  # multi-level of the hashgrid
+      out_dim: 16
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true
@@ -24,7 +23,7 @@ model_cfg:
       weight_norm: true
       weight_init: false
       activation: 'Softplus'
-      out_activation: 'Softplus100'  # should be carefully watched
+      out_activation: 'Softplus100'
       scale_term: 0.001
     embedder:
       _target_: src.model.components.embedding.FourierEmbedder

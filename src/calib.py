@@ -324,10 +324,10 @@ class CalibBoard(object):
                     
                     # convert color to gray
                     if channel == 1:
-                        clean_patches = rgb_to_grayscale(torch.tensor(clean_patches).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
-                        patches_c = rgb_to_grayscale(torch.tensor(patches_c).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
-                        patches_l = rgb_to_grayscale(torch.tensor(patches_l).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
-                        patches_r = rgb_to_grayscale(torch.tensor(patches_r).permute(0, 3, 1, 2) / 255).permute(0, 2, 3, 1).numpy() * 255
+                        clean_patches = rgb_to_grayscale(torch.tensor(clean_patches).permute(0, 3, 1, 2)).permute(0, 2, 3, 1).numpy()
+                        patches_c = rgb_to_grayscale(torch.tensor(patches_c).permute(0, 3, 1, 2)).permute(0, 2, 3, 1).numpy()
+                        patches_l = rgb_to_grayscale(torch.tensor(patches_l).permute(0, 3, 1, 2)).permute(0, 2, 3, 1).numpy()
+                        patches_r = rgb_to_grayscale(torch.tensor(patches_r).permute(0, 3, 1, 2)).permute(0, 2, 3, 1).numpy()
                     
                     # save data
                     training_data['rvec'][nidx] = repeat(rvec, 'p q -> n p q', n=len(circenters))
