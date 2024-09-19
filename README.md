@@ -29,7 +29,7 @@ pip install -r requirements.txt
                 - *.TIF
 ```
 
-## 3. run Calibration
+## 3. Run Calibration
 ### **Stage1. Run Intrinsic Calibration**
 ```
 sh ./scripts/intrinsic_calib_240219_F06.sh
