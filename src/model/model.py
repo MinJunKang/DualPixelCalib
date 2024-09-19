@@ -155,7 +155,15 @@ class PSFVolumeModule(LightningModule):
         
         return kernel_w[..., :kernel_channel // 2], kernel_w[..., kernel_channel // 2:]
     
-    def infer_psf_volume(self, pts3d, uv_coord, kernel_size):
+    def infer_psf_volume(self, pts3d, uv_coord, kernel_size, resize=False):
+        # dim : [kernel_size, kernel_size, level, C]
+        
+        if resize:
+            pts3d = F.interpolate(rearrange(pts3d, 'kh kw l c -> l c kh kw'), size=(self.kernel_size, self.kernel_size))
+            uv_coord = F.interpolate(rearrange(uv_coord, 'kh kw l c -> l c kh kw'), size=(self.kernel_size, self.kernel_size))
+            pts3d = rearrange(pts3d, 'l c kh kw -> kh kw l c')
+            uv_coord = rearrange(uv_coord, 'l c kh kw -> kh kw l c')
+        
         kernel_channel = self.blur_volume['mlpnet'].out_dim
         feat = self.blur_volume['featnet'](pts3d.reshape(-1, 3))
         norm_coords = torch.cat([uv_coord.reshape(-1, 2), pts3d.reshape(-1, 3)], dim=1)
@@ -166,7 +174,13 @@ class PSFVolumeModule(LightningModule):
             norm_coords = self.blur_volume['embedder'](norm_coords)
             
         kernel_w = self.blur_volume['mlpnet'](torch.cat([norm_coords, feat], dim=1))
-        kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=kernel_size, kw=kernel_size)
+        
+        if resize:
+            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l c kh kw', kh=self.kernel_size, kw=self.kernel_size)
+            kernel_w = F.interpolate(kernel_w, size=(kernel_size, kernel_size))
+            kernel_w = rearrange(kernel_w, 'l c kh kw -> l kh kw c')
+        else:
+            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=kernel_size, kw=kernel_size)
         return kernel_w[..., :kernel_channel // 2], kernel_w[..., kernel_channel // 2:]
     
     def DPKernels_to_Disparity(self, kernel_left, kernel_right, depth_range):
@@ -253,7 +267,6 @@ class PSFVolumeModule(LightningModule):
             depths = torch.linspace(0.0, 1.0, self.hparams.model_cfg.level).to(clean_img.device) * (self.max_depth - self.min_depth) + self.min_depth
             xy_coords = torch.linspace(-1/2*self.bound_xy, 1/2*self.bound_xy, self.kernel_uv_size).to(clean_img.device)
             xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [kernel_size_uv, kernel_size_uv, level, 3]
-            xyz_coords = rearrange(xyz_coords, 'h w l c -> (h w l) c')
             
             # get psf volume
             kernel_w_left, kernel_w_right = self.infer_psf_volume(xyz_coords, torch.zeros_like(xyz_coords[..., :2]), self.kernel_uv_size)

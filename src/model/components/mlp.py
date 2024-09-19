@@ -15,6 +15,8 @@ def activation_string_to_func(activation: str) -> nn.Module:
         return nn.Sigmoid()
     elif activation == 'Softplus':
         return nn.Softplus(beta=10)
+    elif activation == 'Softplus100':
+        return nn.Softplus(beta=100)
     elif activation == 'Tanh':
         return nn.Tanh()
     elif activation == 'None':
@@ -42,6 +44,7 @@ class MLP(nn.Module):
         hidden_dims: List[int],
         out_dim: int,
         scale_term: float = 0.001,
+        bias_term: float = None,
         skip_connections: Optional[Tuple[int]] = None,
         activation: Optional[str] = "None",
         out_activation: Optional[str] = "None",
@@ -50,7 +53,7 @@ class MLP(nn.Module):
         bias: float = 0.0,
     ) -> None:
         super().__init__()
-        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus']
+        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus100', 'Softplus']
         self.in_dim = in_dim
         self.hidden_dims = hidden_dims
         self.out_dim = out_dim
@@ -63,7 +66,11 @@ class MLP(nn.Module):
         self.weight_norm = weight_norm
         self.bias = bias
         self.type = 'mlp'
-        self.scale_term = scale_term
+        self.logit_scale = nn.Parameter(torch.ones([]) * scale_term)
+        if bias_term is not None:
+            self.logit_bias = nn.Parameter(torch.ones([]) * bias_term)
+        else:
+            self.logit_bias = 0
         self.build_nn_modules()
 
     def build_nn_modules(self) -> None:
@@ -123,9 +130,9 @@ class MLP(nn.Module):
             if self.activation is not None and i < len(self.layers) - 2:
                 x = self.activation(x)
         if self.out_activation is not None:
-            return self.out_activation(x) * self.scale_term
+            return self.out_activation(x * self.logit_scale + self.logit_bias)
         else:
-            return x.abs() * self.scale_term
+            return (x * self.logit_scale + self.logit_bias).abs()
     
     
     
@@ -137,11 +144,12 @@ class TCNNMLP(nn.Module):
         n_hidden_layers: int,
         out_dim: int,
         scale_term: float = 0.001,
+        bias_term: float = None,
         activation: Optional[str] = "None",
         out_activation: Optional[str] = "None",
     ) -> None:
         super().__init__()
-        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus']
+        assert out_activation in ['None', 'ReLU', 'Sigmoid', 'Softplus100', 'Softplus']
         self.out_dim = out_dim
         self.net = tcnn.Network(
             n_input_dims=in_dim,
@@ -155,11 +163,15 @@ class TCNNMLP(nn.Module):
             },
         )
         self.out_activation = activation_string_to_func(out_activation)
-        self.scale_term = scale_term
+        self.logit_scale = nn.Parameter(torch.ones([]) * scale_term)
+        if bias_term is not None:
+            self.logit_bias = nn.Parameter(torch.ones([]) * bias_term)
+        else:
+            self.logit_bias = 0
         
     def forward(self, in_tensor):
         
         if self.out_activation is not None:
-            return self.out_activation(self.net(in_tensor)) * self.scale_term
+            return self.out_activation(self.net(in_tensor) * self.logit_scale + self.logit_bias)
         else:
-            return self.net(in_tensor).abs() * self.scale_term
+            return (self.net(in_tensor) * self.logit_scale + self.logit_bias).abs()

@@ -265,6 +265,8 @@ class CameraObject(object):
                     uv_coord_patch[..., 0] = (uv_coord_patch[..., 0] - umtx[0, 2]) / umtx[0, 0]
                     uv_coord_patch[..., 1] = (uv_coord_patch[..., 1] - umtx[1, 2]) / umtx[1, 1]
                     
+                    import pdb; pdb.set_trace()
+                    
                     # get psf volume
                     feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords.reshape(-1, 3))
                     coords = torch.cat([uv_coord_patch.reshape(-1, 2), xyz_coords.reshape(-1, 3)], dim=1)
@@ -331,7 +333,7 @@ class CameraObject(object):
         psf_model.eval()
         img_patch_size = 223  # manual parameter
         kernel_size = (img_patch_size * psf_model.hparams.model_cfg.patchRatio)
-        stride = 21  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
+        stride = 67  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
         
         # if we do resize:
         if gt_depth is not None:
@@ -398,8 +400,7 @@ class CameraObject(object):
             uv_coords_norm_sampled = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=level)
             
             # get psf volume
-            psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size)
-            import pdb; pdb.set_trace()
+            psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size, resize=True)
             
             # normalization
             psfk_left = psfk_left / (psfk_left.reshape(level, -1, 3).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
