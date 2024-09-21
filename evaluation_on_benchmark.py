@@ -30,7 +30,7 @@ def main(cfg: DictConfig):
             imgrg = cv2.imread(imgr)
             depth = cv2.imread(depth, cv2.IMREAD_GRAYSCALE)
             img_name = os.path.basename(imgl).split('.')[0]
-            camera_obj.estimateDepthFromPSF(model, imglg, imgrg, img_name, gt_depth=depth, level=32, pad=20, resize_val=0.5)
+            camera_obj.estimateDepthFromPSF(model, imglg, imgrg, img_name, gt_depth=depth, resize_val=0.5)
     else:
         print('Intrinsic calibration is required before PSF calibration')
 

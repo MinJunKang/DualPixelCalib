@@ -2,8 +2,8 @@
 _target_: src.model.model.PSFVolumeModule
 
 model_cfg:
-  level: 64  # depth level of the psf volume
   patchRatio: 0.46   # this is crucial for learning the PSF, make sure this is big enough
+  bound_margin: 0.1
   gradient_method: 'sobel'
   w_diffusion: false
   normalize_input: true
@@ -14,17 +14,17 @@ model_cfg:
       _target_: src.model.components.hashgrid.HashPSFGrid
       _partial_: true
       in_dim: 3
-      num_level: 16  # multi-level of the hashgrid
+      num_level: 8  # multi-level of the hashgrid
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true
-      in_dim: 5
+      in_dim: 1
       hidden_dims: [64, 64]
       out_dim: 2
       weight_norm: true
       weight_init: false
       activation: 'Softplus'
-      out_activation: 'Softplus100'  # should be carefully watched
+      out_activation: 'Softplus100'  # should be carefully watched, seems not working well
       scale_term: 0.001
     embedder:
       _target_: src.model.components.embedding.FourierEmbedder
@@ -35,8 +35,8 @@ model_cfg:
     recon: 1.0
     ssim: 1.0
     sym: 1.0
-    regl1: 0.01
     tv: 0.01
+    regl1: 0.01
 
 optimizer:
   _target_: torch.optim.AdamW

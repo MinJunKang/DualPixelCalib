@@ -38,7 +38,8 @@ class PSFVolumeModule(LightningModule):
         self.patchSize = meta_data['patchSize_px']
         self.kernel_size = math.ceil(self.patchSize * model_cfg.patchRatio)
         self.kernel_size = self.kernel_size if self.kernel_size % 2 == 1 else self.kernel_size + 1
-        self.kernel_uv_size, self.bound_xy = self.calc_kernel_size(meta_data['umtx'], self.kernel_size, meta_data['px_ratio_max'], meta_data['xy_ratio_max'])
+        self.kernel_uv_size, self.bound_xy = self.calc_kernel_size(meta_data['umtx'], self.kernel_size, depth_range[1], meta_data['xy_ratio_max'])
+        self.bound_xy = self.bound_xy * (1 + model_cfg.bound_margin)
         
         # diffusion model
         if model_cfg.w_diffusion and diffusion_model is not None:
@@ -56,8 +57,9 @@ class PSFVolumeModule(LightningModule):
         self.gaussian = GaussianBlur2d(kernel_size=(7, 7), sigma=(2.0, 2.0), border_type='constant')
         
         # register parameters
-        self.register_parameter('min_depth', Parameter(torch.tensor(depth_range[0]), requires_grad=False))
-        self.register_parameter('max_depth', Parameter(torch.tensor(depth_range[1]), requires_grad=False))
+        self.register_buffer('observed_depths', torch.tensor(meta_data['observed_depths'], dtype=torch.float32))
+        self.register_buffer('min_depth', torch.tensor(depth_range[0], dtype=torch.float32))
+        self.register_buffer('max_depth', torch.tensor(depth_range[1], dtype=torch.float32))
         
         # log metric and loss
         self.train_loss = MeanMetric()
@@ -89,7 +91,7 @@ class PSFVolumeModule(LightningModule):
         
         return architecture
         
-    def calc_kernel_size(self, K_mat, kernel_size, px_ratio_max, xy_ratio_max):
+    def calc_kernel_size(self, K_mat, kernel_size, max_depth, xy_ratio_max):
         '''
         Args:
             Kmat: camera matrix
@@ -110,7 +112,7 @@ class PSFVolumeModule(LightningModule):
         '''
         fx, fy = K_mat[0, 0], K_mat[1, 1]
         bound_xy = kernel_size * (xy_ratio_max / min(fx, fy))
-        kernel_uvsize = math.ceil(kernel_size * px_ratio_max)
+        kernel_uvsize = math.ceil(bound_xy * min(fx, fy) / max_depth)
         kernel_uvsize = kernel_uvsize if kernel_uvsize % 2 == 1 else kernel_uvsize + 1
         return kernel_uvsize, bound_xy
     
@@ -138,8 +140,8 @@ class PSFVolumeModule(LightningModule):
         batch, n, kh, kw, c = pts3d.shape
         masked_pts3d, masked_uv_coord = pts3d[mask].reshape(-1, 3), uv_coord[mask].reshape(-1, 2)
         feat = self.blur_volume['featnet'](masked_pts3d)
-        norm_coords = torch.cat([masked_uv_coord, masked_pts3d], dim=1)
-        norm_coords[..., 2:-1] = (norm_coords[..., 2:-1] / (self.bound_xy / 2))
+        # norm_coords = torch.cat([masked_uv_coord, masked_pts3d[..., -1:]], dim=1)
+        norm_coords = masked_pts3d[..., -1:]
         norm_coords[..., -1] = (norm_coords[..., -1] - self.min_depth) / (self.max_depth - self.min_depth) * 2. - 1.
         
         if 'embedder' in self.blur_volume:
@@ -159,15 +161,17 @@ class PSFVolumeModule(LightningModule):
         # dim : [kernel_size, kernel_size, level, C]
         
         if resize:
-            pts3d = F.interpolate(rearrange(pts3d, 'kh kw l c -> l c kh kw'), size=(self.kernel_size, self.kernel_size))
-            uv_coord = F.interpolate(rearrange(uv_coord, 'kh kw l c -> l c kh kw'), size=(self.kernel_size, self.kernel_size))
+            pts3d = F.interpolate(rearrange(pts3d, 'kh kw l c -> l c kh kw'), size=(self.kernel_uv_size, self.kernel_uv_size))
+            uv_coord = F.interpolate(rearrange(uv_coord, 'kh kw l c -> l c kh kw'), size=(self.kernel_uv_size, self.kernel_uv_size))
             pts3d = rearrange(pts3d, 'l c kh kw -> kh kw l c')
             uv_coord = rearrange(uv_coord, 'l c kh kw -> kh kw l c')
+        else:
+            pts3d, uv_coord = pts3d.clone(), uv_coord.clone()
         
         kernel_channel = self.blur_volume['mlpnet'].out_dim
         feat = self.blur_volume['featnet'](pts3d.reshape(-1, 3))
-        norm_coords = torch.cat([uv_coord.reshape(-1, 2), pts3d.reshape(-1, 3)], dim=1)
-        norm_coords[..., 2:-1] = (norm_coords[..., 2:-1] / (self.bound_xy / 2))
+        # norm_coords = torch.cat([uv_coord.reshape(-1, 2), pts3d.reshape(-1, 3)[..., -1:]], dim=1)
+        norm_coords = pts3d.reshape(-1, 3)[..., -1:]
         norm_coords[..., -1] = (norm_coords[..., -1] - self.min_depth) / (self.max_depth - self.min_depth) * 2. - 1.
         
         if 'embedder' in self.blur_volume:
@@ -176,8 +180,8 @@ class PSFVolumeModule(LightningModule):
         kernel_w = self.blur_volume['mlpnet'](torch.cat([norm_coords, feat], dim=1))
         
         if resize:
-            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l c kh kw', kh=self.kernel_size, kw=self.kernel_size)
-            kernel_w = F.interpolate(kernel_w, size=(kernel_size, kernel_size))
+            kernel_w = rearrange(kernel_w, '(kh kw l) c -> l c kh kw', kh=self.kernel_uv_size, kw=self.kernel_uv_size)
+            kernel_w = F.interpolate(kernel_w, size=(kernel_size, kernel_size), mode='bilinear', align_corners=True)
             kernel_w = rearrange(kernel_w, 'l c kh kw -> l kh kw c')
         else:
             kernel_w = rearrange(kernel_w, '(kh kw l) c -> l kh kw c', kh=kernel_size, kw=kernel_size)
@@ -200,12 +204,10 @@ class PSFVolumeModule(LightningModule):
             ones_kernel = torch.ones((clean_img.shape[1], clean_img.shape[1], self.kernel_size, self.kernel_size), device=clean_img.device)
             mask = F.conv2d(clean_img, weight=ones_kernel, stride=1, padding=self.kernel_size // 2, dilation=1) > 0
             mask_rgb = mask_rgb & mask
-            mask_float = rearrange(mask_rgb.sum(dim=1), 'b h w -> b (h w)').type_as(clean_img)
+            mask_final = rearrange(mask_rgb.sum(dim=1), 'b h w -> b (h w)') > 0
             gradient_left = self.gradient_apply(batch['left'], clean_img, mask_rgb)
             gradient_right = self.gradient_apply(batch['right'], clean_img, mask_rgb)
-            gradient_left = gradient_left * batch['weight']
-            gradient_right = gradient_right * batch['weight']
-            output.update({'mask': rearrange(mask_float > 0, 'b (h w) -> b h w', h=self.patchSize, w=self.patchSize)})
+            output.update({'mask': rearrange(mask_final, 'b (h w) -> b h w', h=self.patchSize, w=self.patchSize)})
             
             # apply diffusion if enabled
             if self.diffusion_model is not None:
@@ -229,8 +231,6 @@ class PSFVolumeModule(LightningModule):
         # unfolding
         uvcoord_unfold = unfolding(batch['uv_coord'], kernel_size=self.kernel_size)  # already distorted uv coordinates
         pts3d_unfold = unfolding(batch['3d_coord'], kernel_size=self.kernel_size)  # 3d scene points
-        mask_unfold = unfolding(rearrange(mask_float, 'b (h w) -> b 1 h w', h=self.patchSize, w=self.patchSize), kernel_size=self.kernel_size)  # mask
-        mask_unfold = mask_unfold[..., 0] > 0
         
         # normalized uv coord
         uvcoord_unfold[..., 0] = (uvcoord_unfold[..., 0] - self.hparams.meta_data.mtx[0, 2]) / self.hparams.meta_data.mtx[0, 0]
@@ -238,7 +238,7 @@ class PSFVolumeModule(LightningModule):
         
         # kernel sampling from psf volume
         pts3d_unfold[..., :2] = pts3d_unfold[..., :2] - pts3d_unfold[:, :, self.kernel_size // 2:self.kernel_size // 2 + 1, self.kernel_size // 2:self.kernel_size // 2 + 1, :2]
-        kernel_left, kernel_right = self.forward_psf_volume(pts3d_unfold, uvcoord_unfold, mask_unfold)
+        kernel_left, kernel_right = self.forward_psf_volume(pts3d_unfold, uvcoord_unfold, mask_final)
         
         # reblurred image
         kernel_left = rearrange(kernel_left, 'b (h w) kh kw c -> b c kh kw h w', h=self.patchSize, w=self.patchSize)
@@ -258,17 +258,16 @@ class PSFVolumeModule(LightningModule):
         loss.update({'loss_regl1': loss_regl1_left + loss_regl1_right})
         loss_tv_left_img = torch.mean(total_variation(reblurred_left * mask_rgb, reduction='mean'))
         loss_tv_right_img = torch.mean(total_variation(reblurred_right * mask_rgb, reduction='mean'))
-        loss_tv_left = torch.mean(total_variation(total_variation(rearrange(kernel_left, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
-        loss_tv_right = torch.mean(total_variation(total_variation(rearrange(kernel_right, 'b c kh kw h w -> b c h w kh kw'), reduction='mean'), reduction='sum'))
+        loss_tv_left = torch.mean(total_variation(rearrange(kernel_left, 'b c kh kw h w -> b c h w kh kw')[mask_rgb], reduction='mean'))
+        loss_tv_right = torch.mean(total_variation(rearrange(kernel_right, 'b c kh kw h w -> b c h w kh kw')[mask_rgb], reduction='mean'))
         loss.update({'loss_tv': loss_tv_left + loss_tv_right + loss_tv_left_img + loss_tv_right_img})
         # loss.update({'loss_tv': loss_tv_left_img + loss_tv_right_img})
         # loss.update({'loss_tv': loss_tv_left + loss_tv_right})
         
         # Volumetric symmetric loss at (u, v) = (0, 0)
         if self.hparams.model_cfg.use_symmetric_loss:
-            depths = torch.linspace(0.0, 1.0, self.hparams.model_cfg.level).to(clean_img.device) * (self.max_depth - self.min_depth) + self.min_depth
             xy_coords = torch.linspace(-1/2*self.bound_xy, 1/2*self.bound_xy, self.kernel_uv_size).to(clean_img.device)
-            xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [kernel_size_uv, kernel_size_uv, level, 3]
+            xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, self.observed_depths, indexing='xy'), dim=-1)  # [kernel_size_uv, kernel_size_uv, level, 3]
             
             # get psf volume
             kernel_w_left, kernel_w_right = self.infer_psf_volume(xyz_coords, torch.zeros_like(xyz_coords[..., :2]), self.kernel_uv_size)
@@ -280,7 +279,7 @@ class PSFVolumeModule(LightningModule):
         return loss, output
     
     def on_after_backward(self) -> None:
-        if self.blur_volume['featnet'].type == 'dense':
+        if self.blur_volume['featnet'].type in ['dense', 'mixed']:
             weight = self.hparams.model_cfg.loss_weight['tv_dense'] * self.blur_volume['featnet'].psfVsize / 128
             self.blur_volume['featnet'].total_variation_add_grad(weight, weight, weight)
     

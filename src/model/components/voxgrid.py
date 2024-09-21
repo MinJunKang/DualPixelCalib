@@ -21,12 +21,13 @@ total_variation_cuda = load(
 
 
 class PSFGrid(nn.Module):
-    def __init__(self, out_dim, level, psfVsize, bound_xy, min_depth, max_depth, for_test=False):
+    def __init__(self, out_dim, level, psfVsize, bound_xy, min_depth, max_depth, mask_cache_thres=1e-5, for_test=False):
         super(PSFGrid, self).__init__()
         self.in_dim = 3
         self.out_dim = out_dim
         self.level = level
         self.psfVsize = psfVsize
+        self.mask_cache_thres = mask_cache_thres
         self.type = 'dense'
         
         if for_test:
@@ -34,6 +35,9 @@ class PSFGrid(nn.Module):
             self.psfVolume = Parameter(1e-3*torch.from_numpy(psfV_numpy), requires_grad=False)
         else:
             self.psfVolume = Parameter(torch.zeros(1, self.out_dim, level, psfVsize, psfVsize).normal_(mean=0, std=0.0001), requires_grad=True)
+        import pdb; pdb.set_trace()
+        #TODO: implement mask_cache
+        self.maskVolume = torch.ones_like(self.psfVolume[:, 0])
         
         self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_depth]))
         self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_depth]))
@@ -77,6 +81,11 @@ class PSFGrid(nn.Module):
         if self.psfVolume.grad is not None:
             # add total variation loss
             total_variation_cuda.total_variation_add_grad(self.psfVolume, self.psfVolume.grad, wx, wy, wz, dense_mode)  # type: ignore
+            
+    @torch.no_grad()
+    def update_mask_cache(self):
+        import pdb; pdb.set_trace()
+        # psfVolume should be multiplied by mask_cache
     
     def forward(self, points):
         '''

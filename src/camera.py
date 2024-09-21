@@ -153,10 +153,9 @@ class CameraObject(object):
         image_px = torch.maximum(patch_u_max - patch_u_min, patch_v_max - patch_v_min)
         px_ratio = (image_px / training_data['patchSize_px'])
         xy_ratio = px_ratio * depth_mean
-        px_ratio_max = px_ratio.max().item()
         xy_ratio_max = xy_ratio.max().item()
         
-        return {'focal_mm': focal_mm, 'aperture': aperture, 'fnumber': fnumber, 'depth_min': depth_min, 'depth_max': depth_max, 'px_ratio_max': px_ratio_max, 'xy_ratio_max': xy_ratio_max}
+        return {'focal_mm': focal_mm, 'aperture': aperture, 'fnumber': fnumber, 'depth_min': depth_min, 'depth_max': depth_max, 'xy_ratio_max': xy_ratio_max}
     
     # train PSF calibration model
     def trainPSFCalibModel(self, vis_result=False):
@@ -204,9 +203,9 @@ class CameraObject(object):
             trainer.fit(model=model, datamodule=datamodule, ckpt_path=self.opts.get("load_ckpt"))
             
         # save PSF volume related results
-        if vis_result:
-            self.savePSFImage(model)
-            self.savePSFVolume(model)
+        # if vis_result:
+        #     self.savePSFImage(model)
+        #     self.savePSFVolume(model)
         return model
     
     def trainDiffusionModel(self):
@@ -237,19 +236,16 @@ class CameraObject(object):
         self.diffusion.model.training = False
         
     @torch.no_grad()
-    def savePSFImage(self, psf_model, level=64, splits=[8, 10], pad=60, device='cuda'):
+    def savePSFImage(self, psf_model, level=64, splits=[8, 10], device='cuda'):
         psf_model.to(device)
         psf_model.eval()
         
-        channel_dim = psf_model.blur_volume['mlpnet'].out_dim // 2
         h_img, w_img = self.calib_data['camera']['image_size']
         patch_size = psf_model.kernel_uv_size
-        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(0.0, 1.0, level).to(device) * (max_depth - min_depth) + min_depth
         umtx = torch.from_numpy(np.float32(self.calib_data['camera']['umtx'])).to(device)
         
         xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, patch_size).to(device)
-        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
+        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, psf_model.observed_depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
         
         result_img_left = []
         result_img_right = []
@@ -269,15 +265,8 @@ class CameraObject(object):
                     uv_coord_patch[..., 1] = (uv_coord_patch[..., 1] - umtx[1, 2]) / umtx[1, 1]
                     
                     # get psf volume
-                    feat = psf_model.blur_volume['featnet'].cuda()(xyz_coords_n.reshape(-1, 3))
-                    coords = torch.cat([uv_coord_patch.reshape(-1, 2), xyz_coords_n.reshape(-1, 3)], dim=1)
-                    coords[..., 2:-1] = (coords[..., 2:-1] / (psf_model.bound_xy / 2))
-                    coords[..., -1] = (coords[..., -1] - psf_model.min_depth) / (psf_model.max_depth - psf_model.min_depth) * 2. - 1.
-                    if 'embedder' in psf_model.blur_volume:
-                        coords = psf_model.blur_volume['embedder'].cuda()(coords)
-                    kernel_w = psf_model.blur_volume['mlpnet'].cuda()(torch.cat([coords, feat], dim=1))
-                    kernel_w = kernel_w.reshape(patch_size, patch_size, -1)
-                    psfk_left, psfk_right = kernel_w[..., :channel_dim].cpu().numpy(), kernel_w[..., channel_dim:].cpu().numpy()
+                    psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords_n, uv_coord_patch, patch_size, resize=True)
+                    
                     result_psf_colsl.append((psfk_left - psfk_left.min()) / (psfk_left.max() - psfk_left.min()) * 255)
                     result_psf_colsr.append((psfk_right - psfk_right.min()) / (psfk_right.max() - psfk_right.min()) * 255)
                     
@@ -293,13 +282,11 @@ class CameraObject(object):
         save_as_gif(result_img_right, Path(self.opts.paths.output_dir) / f'psfvolume_right.gif', duration=250)
     
     @torch.no_grad()
-    def savePSFVolume(self, psf_model, level=16, pad=60, device='cuda'):
+    def savePSFVolume(self, psf_model, level=16, device='cuda'):
         psf_model.to(device)
         psf_model.eval()
-        
         patch_size = psf_model.kernel_uv_size
-        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(0.0, 1.0, level).to(device) * (max_depth - min_depth) + min_depth
+        min_depth, max_depth = psf_model.min_depth.item(), psf_model.max_depth.item()
         
         # create uv coords
         uv_coords = torch.stack(torch.meshgrid(torch.arange(patch_size), torch.arange(patch_size), indexing='xy'), dim=-1).to(device)
@@ -308,7 +295,7 @@ class CameraObject(object):
         uv_coords = repeat(uv_coords, 'x y c -> x y l c', l=level)
         
         xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, patch_size).to(device)
-        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
+        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, psf_model.observed_depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
         
         # get psf volume
         psfV_left, psfV_right = psf_model.infer_psf_volume(xyz_coords, uv_coords, patch_size, resize=True)
@@ -318,11 +305,11 @@ class CameraObject(object):
         visualize_PSFVolume(psfV_right[..., 0].cpu().numpy(), min_depth, max_depth, Path(self.opts.paths.output_dir), 'right')
         
     @torch.no_grad()
-    def estimateDepthFromPSF(self, psf_model, imglg, imgrg, img_name, gt_depth=None, level=255, pad=60, resize_val=1.0, device='cuda'):
+    def estimateDepthFromPSF(self, psf_model, imglg, imgrg, img_name, gt_depth=None, resize_val=1.0, device='cuda'):
         psf_model.to(device)
         psf_model.eval()
         img_patch_size = 223  # manual parameter
-        kernel_size = (img_patch_size * psf_model.hparams.model_cfg.patchRatio)
+        kernel_size = psf_model.kernel_uv_size
         stride = 67  # the bigger this number, the faster the inference, coarser output map  >>  determine output resolution
         channel_dim = psf_model.blur_volume['mlpnet'].out_dim // 2
         
@@ -342,7 +329,7 @@ class CameraObject(object):
         kernel_size = kernel_size + 1 if kernel_size % 2 == 0 else kernel_size
         img_patch_size = img_patch_size + 1 if img_patch_size % 2 == 0 else img_patch_size
         stride = stride + 1 if stride % 2 == 0 else stride
-        border = kernel_size // 2 + (kernel_size - stride) // 2  # should be greater than half of kernel size
+        border = kernel_size // 2 + 3  # should be greater than half of kernel size
         border = border + 1 if border % 2 == 0 else border
         half_patch_size, half_kernel_size, half_stride = img_patch_size // 2, kernel_size // 2, stride // 2
         
@@ -376,15 +363,14 @@ class CameraObject(object):
         uv_coords_norm[..., 0] = (uv_coords_norm[..., 0] - umtx[0, 2]) / umtx[0, 0]
         uv_coords_norm[..., 1] = (uv_coords_norm[..., 1] - umtx[1, 2]) / umtx[1, 1]
 
-        min_depth, max_depth = psf_model.min_depth.item() + pad, psf_model.max_depth.item() - pad
-        depths = torch.linspace(0.0, 1.0, level).to(device) * (max_depth - min_depth) + min_depth
+        level = len(psf_model.observed_depths)
         depth_level = torch.zeros([h_img, w_img], dtype=torch.long, device=device)
         depth_cost = torch.zeros([h_img, w_img], device=device)
         sobel_val = torch.zeros([h_img, w_img], device=device)
         
         # xyz approximation
         xy_coords = torch.linspace(-1/2*psf_model.bound_xy, 1/2*psf_model.bound_xy, kernel_size).to(device)
-        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
+        xyz_coords = torch.stack(torch.meshgrid(xy_coords, xy_coords, psf_model.observed_depths, indexing='xy'), dim=-1)  # [patch_size, patch_size, level, 3]
         
         num_pixels = len(uv_coords)
         for n in tqdm(range(num_pixels)):
@@ -394,16 +380,16 @@ class CameraObject(object):
             uv_coords_norm_sampled = repeat(uv_coords_norm_sampled, 'x y c -> x y l c', l=level)
             
             # get psf volume
-            psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size, resize=True)
+            psfk_left, psfk_right = psf_model.infer_psf_volume(xyz_coords, uv_coords_norm_sampled, kernel_size, resize=False)
             
             # normalization
             psfk_left = psfk_left / (psfk_left.reshape(level, -1, channel_dim).sum(dim=1))[:, None, None] * 0.5  # [depth_level, kh, kw, 3]
             psfk_right = psfk_right / (psfk_right.reshape(level, -1, channel_dim).sum(dim=1))[:, None, None] * 0.5
             
-            # for i in range(level):
-            #     cv2.imwrite(f'psf{i}_left.png', psfk_left[i].cpu().numpy() / psfk_left[i].max().item() * 255) 
-            #     cv2.imwrite(f'psf{i}_right.png', psfk_right[i].cpu().numpy() / psfk_right[i].max().item() * 255) 
-            # import pdb; pdb.set_trace()
+            for i in range(level):
+                cv2.imwrite(f'psf{i}_left.png', psfk_left[i].cpu().numpy() / psfk_left[i].max().item() * 255) 
+                cv2.imwrite(f'psf{i}_right.png', psfk_right[i].cpu().numpy() / psfk_right[i].max().item() * 255) 
+            import pdb; pdb.set_trace()
             
             # flipped kernel
             psfk_left_flip = torch.flip(psfk_left, [2])

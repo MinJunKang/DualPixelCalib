@@ -2,7 +2,6 @@ from typing import Any, Dict, Optional, Tuple
 from PIL import Image
 import numpy as np
 from pathlib import Path
-from scipy.ndimage import convolve1d, gaussian_filter1d
 
 import torch
 from torchvision import transforms
@@ -12,7 +11,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 class DPCalloader(Dataset):
     
-    def __init__(self, data, model_cfg, LDS_cfg, transform, precision):
+    def __init__(self, data, model_cfg, transform, precision):
         
         self.precision = precision
         self.transform = transform
@@ -27,31 +26,7 @@ class DPCalloader(Dataset):
         self.rvec = data['training_data']['rvec']
         self.tvec = data['training_data']['tvec']
         self.image_size = data['camera']['image_size']
-        
-        # Since the depth label of PSF is imbalanced, adapt "Delving into Deep Imbalanced Regression (ICML'21)" to regress imbalance
-        # For LDS method, compute effective label density and re-weight
-        if LDS_cfg.use_LDS:
-            self.LDS_ratio = (model_cfg.level / LDS_cfg.LDS_step)
-            self.weights_LDS, self.min_depth, self.max_depth = self.calc_reweight_LDS(data['training_data']['patch_3d'], model_cfg.level, LDS_cfg.LDS_step, LDS_cfg.LDS_sigma, LDS_cfg.LDS_ks)
-        else:
-            self.LDS_ratio = None
-            self.weights_LDS, self.min_depth, self.max_depth = None, data['training_data']['depth_min'], data['training_data']['depth_max']
-        
-    def gauss1d_kernel_LDS(self, sigma, ks):
-        half_ks = (ks - 1) // 2
-        base_kernel = [0.] * half_ks + [1.] + [0.] * half_ks
-        kernel = gaussian_filter1d(base_kernel, sigma=sigma)
-        return kernel / max(kernel)
-        
-    def calc_reweight_LDS(self, depths, level, LDS_step, LDS_sigma, LDS_ks, eps=1e-3):
-        depth_all = depths[depths > eps]
-        bins_number, _ = np.histogram(depth_all, bins=int(level / LDS_step))
-        bins_number = np.sqrt(bins_number)
-        kernel_window = self.gauss1d_kernel_LDS(LDS_sigma, LDS_ks)
-        smoothed_bins = convolve1d(bins_number, weights=kernel_window, mode='reflect')
-        scaling = np.sum(bins_number) / np.sum(np.array(bins_number) / (np.array(smoothed_bins) + 1e-6))
-        weights = np.float32(scaling / (smoothed_bins + 1e-6)).clip(0, 1)
-        return weights, depth_all.min(), depth_all.max()
+        self.min_depth, self.max_depth = data['training_data']['depth_min'], data['training_data']['depth_max']
         
     def __getitem__(self, index):
         sample_out = dict()
@@ -69,26 +44,12 @@ class DPCalloader(Dataset):
         mask = (self.points_patches[index, ..., -1] > 0) & mask_uv_start & mask_uv_end
         mask = self.transform(self.output_type(mask))
         
-        # Based on LDS, calc weight mask, to resolve imbalanced samples along depth
-        depths = self.points_patches[index, ..., -1]
-        if self.weights_LDS is not None:
-            ind = (depths - self.min_depth) / (self.max_depth - self.min_depth) * (int(self.LDS_ratio) - 1)
-            ind_0 = np.int64(ind)
-            ind_1 = np.clip(ind_0 + 1, 0, int(self.LDS_ratio) - 1)
-            val_0 = self.weights_LDS[ind_0]
-            val_1 = self.weights_LDS[ind_1]
-            weight = self.output_type(val_0 * (ind_1 - ind) + val_1 * (ind - ind_0))  # linear interpolation
-        else:
-            weight = np.ones_like(depths)
-        weight = self.transform(self.output_type(weight))
-        
         # convert to tensor
         sample_out['clean'] = cleans  # [C, H, W]
         sample_out['left'] = lefts  # [C, H, W]
         sample_out['right'] = rights  # [C, H, W]
         sample_out['aif'] = aifs  # [C, H, W]
         sample_out['mask'] = mask  # [1, H, W]
-        sample_out['weight'] = weight  # [1, H, W]
         sample_out['uv_coord'] = uvs  # [2, H, W]
         sample_out['3d_coord'] = points  # [3, H, W]
         
@@ -104,7 +65,7 @@ class DPPSFDataModule(LightningDataModule):
                  model_cfg,
                  calib_data,
                  focal_distance,
-                 LDS_cfg, 
+                 num_max_level: int,
                  batch_size: int,
                  num_workers: int,
                  num_visualize: int,
@@ -127,14 +88,21 @@ class DPPSFDataModule(LightningDataModule):
         ])
         minmax_depth = (calib_data['training_data']['depth_min'], calib_data['training_data']['depth_max'])
         
+        all_possible_depth_range = np.linspace(minmax_depth[0], minmax_depth[1] + (minmax_depth[1] - minmax_depth[0]) / num_max_level, num_max_level + 1)
+        bins_number, _ = np.histogram(calib_data['training_data']['patch_3d'][..., -1].reshape(-1), bins=all_possible_depth_range)
+        observed_depths = all_possible_depth_range[np.nonzero(bins_number)]
+        distribution = bins_number[np.nonzero(bins_number)]
+        threshold = 0.01 * distribution.mean()
+        observed_depths = observed_depths[distribution > threshold]
+        
         self.meta_data = {'image_size': calib_data['camera']['image_size'],
                           'num_samples': len(calib_data['training_data']['clean_patch']),
                           'num_visualize': num_visualize,
+                          'observed_depths': observed_depths,
                           'focal_mm': calib_data['training_data']['focal_mm'], 
                           'aperture': calib_data['training_data']['aperture'],
                           'fnumber': calib_data['training_data']['fnumber'],
                           'patchSize_px': calib_data['training_data']['patchSize_px'],
-                          'px_ratio_max': calib_data['training_data']['px_ratio_max'],
                           'xy_ratio_max': calib_data['training_data']['xy_ratio_max'],
                           'focal_distance': focal_distance, 'depth_range': minmax_depth,
                           'mtx': calib_data['camera']['mtx'], 'umtx': calib_data['camera']['umtx'], 'dist': calib_data['camera']['dist']}
@@ -159,7 +127,7 @@ class DPPSFDataModule(LightningDataModule):
 
         # load and split datasets only if not loaded already
         if not self.data_train and not self.data_val:
-            dataset = DPCalloader(self.calib_data, self.hparams.model_cfg, self.hparams.LDS_cfg, transform=self.transform, precision=self.precision)
+            dataset = DPCalloader(self.calib_data, self.hparams.model_cfg, transform=self.transform, precision=self.precision)
             # train_val_split = [int(len(dataset) * split) for split in self.hparams.train_val_split]
             # train_val_split[-1] = len(dataset) - sum(train_val_split[:-1])
             # self.data_train, self.data_val = random_split(
