@@ -1,0 +1,2 @@
+
+python evaluation_on_benchmark.py calib=calib_240912_F15_full model=psfvoxel_hash exp_name=F15_A20_hash_240912 calib.psfboard.target_focal=2.0

@@ -3,7 +3,7 @@
 
 ## 1. Installation
 ```
-git clone https://github.com/MinJunKang/DualPixelCalib.git -b minjun
+git clone https://github.com/MinJunKang/DualPixelCalib.git -b baseline
 pip install -r requirements.txt
 ```
 
@@ -32,11 +32,18 @@ pip install -r requirements.txt
 ## 3. Run Calibration
 ### **Stage1. Run Intrinsic Calibration**
 ```
-sh ./scripts/intrinsic_calib_240219_F06.sh
+sh ./scripts/calibration/intrinsic_calib_240912_F15.sh
 ```
 ### **Stage2. Run DP-PSF Calibration**
 ```
-sh ./scripts/psf_calib_F06_A28_base.sh
+sh ./scripts/psf_calib_F15_A28_hash_240912.sh  # hash-grid (18GB), start from configs/model/psfvoxel_hash.yaml
+sh ./scripts/psf_calib_F15_A28_rf_240912.sh  # tensorf (23GB), start from configs/model/psfvoxel_rf.yaml
 ```
 
 ## 4. See log directory to find results
+
+
+## 5. evaluate model on ICCP20 Dataset
+```
+sh ./scripts/evaluate_F15_A28_hash_240912.sh  # test hash-grid
+```

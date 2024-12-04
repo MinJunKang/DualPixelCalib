@@ -12,8 +12,8 @@ class HashPSFGrid(nn.Module):
     def __init__(self, 
                  in_dim: int, 
                  bound_xy: float,
-                 min_depth: float,
-                 max_depth: float,
+                 min_value: float,
+                 max_value: float,
                  num_level: int = 16,
                  min_res: int = 16, 
                  max_res: int = 1024,
@@ -39,8 +39,8 @@ class HashPSFGrid(nn.Module):
                 "interpolation": "Linear"
             },
         )
-        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_depth]))
-        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_depth]))
+        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_value]))
+        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_value]))
         
     def initialize(self, bbox):
         if hasattr(self, "bbox"):

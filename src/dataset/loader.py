@@ -92,7 +92,7 @@ class DPPSFDataModule(LightningDataModule):
         bins_number, _ = np.histogram(calib_data['training_data']['patch_3d'][..., -1].reshape(-1), bins=all_possible_depth_range)
         observed_depths = all_possible_depth_range[np.nonzero(bins_number)]
         distribution = bins_number[np.nonzero(bins_number)]
-        threshold = 0.01 * distribution.mean()
+        threshold = 0.2 * distribution.mean()
         observed_depths = observed_depths[distribution > threshold]
         
         self.meta_data = {'image_size': calib_data['camera']['image_size'],

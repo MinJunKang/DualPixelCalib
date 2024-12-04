@@ -306,8 +306,8 @@ def main():
     
     # parsing arguments
     parser = argparse.ArgumentParser(description='Configuration : board creater')
-    parser.add_argument('--num_x_square', type=int, default=7, help='number of chessboard squares in X direction')
-    parser.add_argument('--num_y_square', type=int, default=5, help='number of chessboard squares in Y direction')
+    parser.add_argument('--num_x_square', type=int, default=9, help='number of chessboard squares in X direction')
+    parser.add_argument('--num_y_square', type=int, default=7, help='number of chessboard squares in Y direction')
     parser.add_argument('--num_grid', type=int, default=2, help='number of grid in specific direction')
     parser.add_argument('--length_square', type=float, default=2.0, help='number of chessboard squares in Y direction')
     parser.add_argument('--length_marker', type=float, default=1.6, help='number of chessboard squares in Y direction')
@@ -345,8 +345,8 @@ def main():
     saved_info['cir_property'] = cir_property
     saved_info['offsets'] = offsets
 
-    path = create_dir(Path('./boards'), False)
-    path = create_dir(path / info.boardname, True)
+    path = create_dir(Path('./boards'), True)
+    path = create_dir(path / info.boardname, False)
 
     # draw board
     cv2.imwrite(str(path / 'board.png'), fboard)

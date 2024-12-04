@@ -21,7 +21,15 @@ total_variation_cuda = load(
 
 
 class PSFGrid(nn.Module):
-    def __init__(self, out_dim, level, psfVsize, bound_xy, min_depth, max_depth, mask_cache_thres=1e-5, for_test=False):
+    def __init__(self, 
+                 out_dim: int, 
+                 level: int, 
+                 psfVsize: int, 
+                 bound_xy: float, 
+                 min_value: float, 
+                 max_value: float, 
+                 mask_cache_thres: float = 1e-5, 
+                 for_test: bool = False):
         super(PSFGrid, self).__init__()
         self.in_dim = 3
         self.out_dim = out_dim
@@ -39,8 +47,8 @@ class PSFGrid(nn.Module):
         #TODO: implement mask_cache
         self.maskVolume = torch.ones_like(self.psfVolume[:, 0])
         
-        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_depth]))
-        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_depth]))
+        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_value]))
+        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_value]))
     
     def create_circular_mask(self, h, w, center=None, radius=None):
         '''

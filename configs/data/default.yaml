@@ -1,7 +1,7 @@
 
 _target_: src.dataset.loader.DPPSFDataModule
 
-num_max_level: 256
+num_max_level: 128
 batch_size: 4  # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 num_workers: 4
 num_visualize: 16

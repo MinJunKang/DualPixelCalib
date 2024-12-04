@@ -262,7 +262,13 @@ class CalibBoard(object):
         # initialize data
         channel = 1  # 3 for rgb case
         training_data = {}
-        circenters = self.psf_board['cir2d'].reshape(-1, 3)
+        
+        # remove circles belonging to borders
+        circenters = rearrange(self.psf_board['cir2d'], '(y x) n m c -> y x n m c', y=self.psf_board['num_y']-2,x=self.psf_board['num_x']-2)
+        circenters = rearrange(circenters[1:-1, 1:-1], 'y x n m c -> (y x n m) c')
+        radius = rearrange(self.psf_board['radius'], '(y x) n m c -> y x n m c', y=self.psf_board['num_y']-2,x=self.psf_board['num_x']-2)
+        radius = rearrange(radius[1:-1, 1:-1], 'y x n m c -> (y x n m c)')
+        
         patchSize_px = math.ceil((self.psf_board['size_px'] / self.psf_board['num_grid'] * self.opts.calib.psfboard.patch_area) / self.opts.calib.psfboard.patch_mul) * self.opts.calib.psfboard.patch_mul
         patchSize_mm = self.opts.calib.intboard.board_size_mm / (self.psf_board['size_px'] / self.psf_board['num_grid']) * patchSize_px
         training_data['patchSize_px'] = patchSize_px
@@ -302,25 +308,24 @@ class CalibBoard(object):
                 pimg_r = cv2.warpPerspective(cv2.undistort(image_r, mtx, dist, None, umtx), invhomo, (w_t, h_t))
                 
                 # patchify all_in_focus image using predefined coordinate
-                circenters, patchsize = self.psf_board['cir2d'].reshape(-1, 3), training_data['patchSize_px']
-                aif_patches = geomath.subpixel_cropper_batch(np.float32(img2gray(aif_pimg))[..., None], circenters, patchsize, mode='bilinear')
+                aif_patches = geomath.subpixel_cropper_batch(np.float32(img2gray(aif_pimg))[..., None], circenters, patchSize_px, mode='bilinear')
                 
                 # detect circle and find fine-grained positions
-                offsets, valid_mask = self.optimizePatches(np.squeeze(aif_patches), blobParams, self.psf_board['radius'].reshape(-1))
+                offsets, valid_mask = self.optimizePatches(np.squeeze(aif_patches), blobParams, radius)
                 mask_patch_valid[nidx] = valid_mask
                 
                 # store patch data
                 if valid_mask.any():
                     # using refined positions, get patches of left and right image
                     circenters_refined = circenters[:, :2] + offsets
-                    patches_l = geomath.subpixel_cropper_batch(np.float32(pimg_l), circenters_refined, patchsize, mode='bilinear')
-                    patches_r = geomath.subpixel_cropper_batch(np.float32(pimg_r), circenters_refined, patchsize, mode='bilinear')
-                    patches_c = geomath.subpixel_cropper_batch(np.float32(aif_pimg), circenters_refined, patchsize, mode='bilinear')
-                    clean_patches = geomath.subpixel_cropper_batch(np.float32(repeat(self.psf_board['template'], 'h w -> h w 3')), circenters, patchsize, mode='bilinear')
+                    patches_l = geomath.subpixel_cropper_batch(np.float32(pimg_l), circenters_refined, patchSize_px, mode='bilinear')
+                    patches_r = geomath.subpixel_cropper_batch(np.float32(pimg_r), circenters_refined, patchSize_px, mode='bilinear')
+                    patches_c = geomath.subpixel_cropper_batch(np.float32(aif_pimg), circenters_refined, patchSize_px, mode='bilinear')
+                    clean_patches = geomath.subpixel_cropper_batch(np.float32(repeat(self.psf_board['template'], 'h w -> h w 3')), circenters, patchSize_px, mode='bilinear')
                     coords_3d = geomath.get_3d_points(template_3d.reshape(-1, 3), rvec, tvec).reshape(h_t, w_t, 3)  # xyz coords
-                    patches_3d = geomath.subpixel_cropper_batch(coords_3d, circenters_refined, patchsize)
+                    patches_3d = geomath.subpixel_cropper_batch(coords_3d, circenters_refined, patchSize_px)
                     prj_uv, _ = cv2.projectPoints(template_3d.reshape(-1, 3), rvec, tvec, mtx, dist)  # uv coords
-                    patches_uv = geomath.subpixel_cropper_batch(prj_uv.reshape(h_t, w_t, 2), circenters_refined, patchsize)
+                    patches_uv = geomath.subpixel_cropper_batch(prj_uv.reshape(h_t, w_t, 2), circenters_refined, patchSize_px)
                     
                     # convert color to gray
                     if channel == 1:

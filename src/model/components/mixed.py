@@ -24,8 +24,8 @@ class PSFGrid(nn.Module):
                  coarse_level: int,
                  coarse_size: int,
                  bound_xy: float,
-                 min_depth: float,
-                 max_depth: float,
+                 min_value: float,
+                 max_value: float,
                  num_level: int = 16,
                  min_res: int = 16, 
                  max_res: int = 1024,
@@ -36,12 +36,12 @@ class PSFGrid(nn.Module):
         self.psfVsize = coarse_size
         self.type = 'mixed'
         
-        self.psfVolume_fine = HashPSFGrid(self.in_dim, bound_xy, min_depth, max_depth, num_level, min_res, max_res, log2_hashmap_size, features_per_level)
+        self.psfVolume_fine = HashPSFGrid(self.in_dim, bound_xy, min_value, max_value, num_level, min_res, max_res, log2_hashmap_size, features_per_level)
         self.psfVolume_coarse = Parameter(torch.zeros(1, self.psfVolume_fine.out_dim, coarse_level, coarse_size, coarse_size).normal_(mean=0, std=0.0001), requires_grad=True)
         self.out_dim = self.psfVolume_fine.out_dim
         
-        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_depth]))
-        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_depth]))
+        self.register_buffer("coord_min", torch.FloatTensor([-bound_xy,  -bound_xy,  min_value]))
+        self.register_buffer("coord_max", torch.FloatTensor([bound_xy,  bound_xy,  max_value]))
         
     def scale_volume_grid(self, new_world_size):
         if self.out_dim == 0:

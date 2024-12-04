@@ -11,11 +11,12 @@ model_cfg:
 
   psf_volume:
     psf_feat:
-      _target_: src.model.components.hashgrid.HashPSFGrid
+      _target_: src.model.components.tensorf.TensoRF
       _partial_: true
       in_dim: 3
-      num_level: 8  # multi-level of the hashgrid
-      max_res: 128  # max resolution of the hashgrid
+      out_dim: 16
+      num_level: 3  # multi-level
+      depth_res: 64  # resolution of the depth
     psf_mlp:
       _target_: src.model.components.mlp.MLP
       _partial_: true

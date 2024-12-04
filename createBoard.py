@@ -351,8 +351,8 @@ def main():
     saved_info['cir_property'] = cir_property
     saved_info['offsets'] = offsets
 
-    path = create_dir(Path('./boards'), False)
-    path = create_dir(path / info.boardname, True)
+    path = create_dir(Path('./boards'), True)
+    path = create_dir(path / info.boardname, False)
 
     # draw board
     cv2.imwrite(str(path / 'board.png'), fboard)
